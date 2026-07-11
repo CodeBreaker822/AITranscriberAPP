@@ -1,4 +1,4 @@
-<dialog data-polish-dialog class="fixed inset-0 m-auto hidden max-h-[calc(100dvh-2rem)] w-[min(92vw,36rem)] overflow-y-auto rounded-lg border border-white/10 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/80">
+<dialog data-polish-dialog style="z-index: 2147483000;" class="fixed inset-0 m-auto hidden max-h-[calc(100dvh-2rem)] w-[min(92vw,36rem)] overflow-y-auto rounded-lg border border-white/10 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/80">
     <form method="dialog" class="p-5 sm:p-6">
         <div class="flex items-start justify-between gap-4">
             <div>

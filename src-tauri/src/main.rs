@@ -937,25 +937,76 @@ fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 fn save_text_export(
     app: tauri::AppHandle,
-    _filename: Option<String>,
+    filename: Option<String>,
     content: String,
+    default_extension: Option<String>,
+    filter_name: Option<String>,
+    filter_extensions: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    save_text_export_content(&app, content)
+    save_export_content(
+        &app,
+        filename.as_deref(),
+        content,
+        default_extension.as_deref(),
+        filter_name.as_deref(),
+        filter_extensions.as_deref(),
+    )
 }
 
 #[tauri::command]
 fn save_text_export_with_dialog(
     app: tauri::AppHandle,
+    filename: Option<String>,
     content: String,
+    default_extension: Option<String>,
+    filter_name: Option<String>,
+    filter_extensions: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    save_text_export_content(&app, content)
+    save_export_content(
+        &app,
+        filename.as_deref(),
+        content,
+        default_extension.as_deref(),
+        filter_name.as_deref(),
+        filter_extensions.as_deref(),
+    )
 }
 
-fn save_text_export_content(
-    app: &tauri::AppHandle,
+#[tauri::command]
+fn save_transcript_export_with_dialog(
+    app: tauri::AppHandle,
+    filename: Option<String>,
     content: String,
+    default_extension: Option<String>,
+    filter_name: Option<String>,
+    filter_extensions: Option<Vec<String>>,
 ) -> Result<Option<String>, String> {
-    let Some(export_path) = choose_text_export_path(app)? else {
+    save_export_content(
+        &app,
+        filename.as_deref(),
+        content,
+        default_extension.as_deref(),
+        filter_name.as_deref(),
+        filter_extensions.as_deref(),
+    )
+}
+
+fn save_export_content(
+    app: &tauri::AppHandle,
+    filename: Option<&str>,
+    content: String,
+    default_extension: Option<&str>,
+    filter_name: Option<&str>,
+    filter_extensions: Option<&[String]>,
+) -> Result<Option<String>, String> {
+    let Some(export_path) = choose_transcript_export_path(
+        app,
+        filename,
+        default_extension,
+        filter_name,
+        filter_extensions,
+    )?
+    else {
         return Ok(None);
     };
 
@@ -965,14 +1016,56 @@ fn save_text_export_content(
     Ok(Some(export_path.display().to_string()))
 }
 
-fn choose_text_export_path(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
-    let Some(file_path) = app
+fn choose_transcript_export_path(
+    app: &tauri::AppHandle,
+    filename: Option<&str>,
+    default_extension: Option<&str>,
+    filter_name: Option<&str>,
+    filter_extensions: Option<&[String]>,
+) -> Result<Option<PathBuf>, String> {
+    let extension = default_extension
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+        .unwrap_or("txt");
+    let filter_title = filter_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Transcript files");
+    let mut extensions: Vec<&str> = filter_extensions
+        .unwrap_or(&[])
+        .iter()
+        .map(String::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+        .collect();
+
+    if extensions.is_empty() {
+        extensions.push(extension);
+    }
+
+    let mut dialog = app
         .dialog()
         .file()
         .set_title("Save transcript export")
-        .add_filter("Text files", &["txt"])
-        .blocking_save_file()
-    else {
+        .add_filter(filter_title, &extensions);
+
+    if let Some(name) = filename
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+    {
+        dialog = dialog.set_file_name(name);
+    }
+
+    let Some(file_path) = dialog.blocking_save_file() else {
         return Ok(None);
     };
 
@@ -981,7 +1074,7 @@ fn choose_text_export_path(app: &tauri::AppHandle) -> Result<Option<PathBuf>, St
         .map_err(|error| format!("failed to read selected export path: {error}"))?;
 
     if path.extension().is_none() {
-        path.set_extension("txt");
+        path.set_extension(extension);
     }
 
     Ok(Some(path))
@@ -1216,6 +1309,7 @@ fn main() {
             open_external_url,
             save_text_export,
             save_text_export_with_dialog,
+            save_transcript_export_with_dialog,
             choose_audio_file,
             cancel_offline_whisper,
             install_update

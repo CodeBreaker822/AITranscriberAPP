@@ -3,7 +3,7 @@ function showNotification(message, type = 'success') {
     const notificationId = 'notification-' + Date.now();
     
     const notification = `
-        <div id="${notificationId}" class="fixed ${bgClass} text-white px-6 py-3 rounded shadow-lg notification" style="z-index: 9999999 !important; top: 20px !important; right: 20px !important; position: fixed !important; display: block !important; visibility: visible !important; opacity: 1 !important;">
+        <div id="${notificationId}" class="fixed ${bgClass} text-white px-6 py-3 rounded shadow-lg notification" style="z-index: 2147483647 !important; top: 20px !important; right: 20px !important; position: fixed !important; display: block !important; visibility: visible !important; opacity: 1 !important;">
             <div class="flex items-center justify-between">
                 <span>${message}</span>
                 <button onclick="closeNotification('${notificationId}')" class="ml-4 text-white hover:text-gray-200">

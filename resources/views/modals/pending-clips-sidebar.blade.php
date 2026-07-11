@@ -1,4 +1,4 @@
-<div data-app-sidebar="pending" class="fixed inset-0 z-50 hidden" aria-hidden="true">
+<div data-app-sidebar="pending" style="z-index: 2147483000;" class="fixed inset-0 z-50 hidden" aria-hidden="true">
     <button type="button" data-close-sidebar class="absolute inset-0 cursor-default bg-slate-950/75" aria-label="Close pending audio panel"></button>
 
     <aside data-sidebar-panel class="absolute inset-y-0 right-0 flex w-[min(94vw,34rem)] translate-x-full flex-col border-l border-white/10 bg-slate-950 shadow-2xl transition-transform duration-300 ease-out" role="dialog" aria-modal="true" aria-label="Pending audio">

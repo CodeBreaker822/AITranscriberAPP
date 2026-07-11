@@ -1,38 +1,80 @@
 $(function () {
     const $body = $('body');
-    const browserDownloadTextFile = (filename, content) => {
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const browserDownloadFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
+        const body = /application\/(vnd\.ms-excel|msword)/i.test(mimeType)
+            ? `\ufeff${content}`
+            : content;
+        const blob = new Blob([body], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.download = filename;
         document.body.appendChild(link);
         link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
+        window.setTimeout(() => {
+            link.remove();
+            URL.revokeObjectURL(url);
+        }, 1000);
+
+        if (typeof window.showNotification === 'function') {
+            window.showNotification(`Export download started: ${filename}`, 'success');
+        }
     };
 
-    const saveTextExport = async (filename, content) => {
+    const saveTranscriptExport = async ({
+        filename,
+        content,
+        mimeType = 'text/plain;charset=utf-8',
+        extension = 'txt',
+        filterName = 'Text files',
+    }) => {
         const invoke = window.__TAURI__?.core?.invoke;
 
         if (typeof invoke !== 'function') {
-            browserDownloadTextFile(filename, content);
+            browserDownloadFile(filename, content, mimeType);
             return;
         }
 
         try {
-            const path = await invoke('save_text_export_with_dialog', { content });
+            const path = await invoke('save_text_export_with_dialog', {
+                content,
+                filename,
+                defaultExtension: extension,
+                filterName,
+                filterExtensions: [extension],
+            });
 
             if (path && typeof window.showNotification === 'function') {
                 window.showNotification(`Export saved to ${path}`, 'success');
             }
         } catch (error) {
-            if (typeof window.showNotification === 'function') {
-                const message = String(error || '').trim();
-                window.showNotification(message || 'Could not save the export. Please try again.', 'error');
+            if (extension !== 'txt') {
+                browserDownloadFile(filename, content, mimeType);
+                return;
+            }
+
+            try {
+                const path = await invoke('save_text_export_with_dialog', { content });
+
+                if (path && typeof window.showNotification === 'function') {
+                    window.showNotification(`Export saved to ${path}`, 'success');
+                }
+            } catch (fallbackError) {
+                if (typeof window.showNotification === 'function') {
+                    const message = String(fallbackError || error || '').trim();
+                    window.showNotification(message || 'Could not save the export. Please try again.', 'error');
+                }
             }
         }
     };
+
+    const saveTextExport = (filename, content) => saveTranscriptExport({
+        filename,
+        content,
+        mimeType: 'text/plain;charset=utf-8',
+        extension: 'txt',
+        filterName: 'Text files',
+    });
 
     const openExternalLink = async (url) => {
         const invoke = window.__TAURI__?.core?.invoke;
@@ -134,6 +176,12 @@ $(function () {
 
     const escapeTranscriptHtml = (value) => $('<div>').text(String(value || '')).html();
 
+    const isUsefulTranscriptText = (value) => {
+        const normalized = String(value || '').trim().toLowerCase();
+
+        return normalized !== '' && normalized !== 'no speech detected' && normalized !== 'no speech detected.';
+    };
+
     const speakerLabel = (speakerId) => {
         const match = String(speakerId || '').match(/(\d+)$/);
 
@@ -152,7 +200,7 @@ $(function () {
             : `${current} ${text}`;
     };
 
-    const renderTranscriptText = (text, timestamps = []) => {
+    const speakerTurnsFromTimestamps = (timestamps = []) => {
         const entries = Array.isArray(timestamps) ? timestamps : [];
         const turns = [];
 
@@ -173,6 +221,171 @@ $(function () {
 
             turns.push({ speakerId, text: part });
         });
+
+        return turns;
+    };
+
+    const transcriptTextWithSpeakerTurns = (text, timestamps = []) => {
+        const turns = speakerTurnsFromTimestamps(timestamps);
+
+        if (!turns.length) {
+            return String(text || '').trim();
+        }
+
+        return turns
+            .map((turn) => `${speakerLabel(turn.speakerId)}: ${turn.text}`)
+            .join('\n');
+    };
+
+    const exportRowsToText = (rows) => rows
+        .map((row) => [row.rangeLabel, row.transcriptText].filter(Boolean).join('\n'))
+        .join('\n\n');
+
+    const exportDocumentTitle = (title, variantLabel) => `${title} - ${variantLabel} Transcript`;
+
+    const exportRowsToSpreadsheetHtml = ({ title, variantLabel, rows }) => `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Calibri, Arial, sans-serif; color: #0f172a; }
+        h1 { color: #0891b2; font-size: 22px; margin: 0 0 4px; }
+        .meta { color: #64748b; font-size: 12px; margin: 0 0 14px; }
+        table { border-collapse: collapse; width: 100%; }
+        th { background: #0f172a; color: #ffffff; font-weight: 700; padding: 9px; text-align: left; border: 1px solid #1e293b; }
+        td { padding: 8px; vertical-align: top; border: 1px solid #cbd5e1; }
+        tr:nth-child(even) td { background: #f8fafc; }
+        .range { color: #0891b2; font-weight: 700; white-space: nowrap; }
+        .speaker { color: #0f766e; font-weight: 700; }
+        .transcript { white-space: pre-wrap; line-height: 1.35; }
+    </style>
+</head>
+<body>
+    <h1>${escapeTranscriptHtml(exportDocumentTitle(title, variantLabel))}</h1>
+    <p class="meta">Generated by ASTRA AITranscriber</p>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Time Range</th>
+                <th>Speakers</th>
+                <th>Transcript</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${rows.map((row, index) => `
+                <tr>
+                    <td>${index + 1}</td>
+                    <td class="range">${escapeTranscriptHtml(row.rangeLabel)}</td>
+                    <td class="speaker">${escapeTranscriptHtml(row.speakerLabels.join(', ') || 'Transcript')}</td>
+                    <td class="transcript">${escapeTranscriptHtml(row.transcriptText)}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>
+</body>
+</html>`;
+
+    const exportRowsToWordHtml = ({ title, variantLabel, rows }) => `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Calibri, Arial, sans-serif; color: #111827; line-height: 1.5; }
+        .page { max-width: 760px; margin: 0 auto; }
+        h1 { margin: 0 0 4px; color: #0f172a; font-size: 26px; }
+        .subtitle { margin: 0 0 20px; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1.8px; }
+        .section { border-top: 2px solid #bae6fd; padding: 14px 0 10px; }
+        .range { display: inline-block; margin-bottom: 8px; padding: 4px 8px; border-radius: 999px; background: #ecfeff; color: #0e7490; font-weight: 700; }
+        p { margin: 0 0 8px; }
+        .speaker { color: #0f766e; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <h1>${escapeTranscriptHtml(exportDocumentTitle(title, variantLabel))}</h1>
+        <p class="subtitle">Generated by ASTRA AITranscriber</p>
+        ${rows.map((row) => `
+            <div class="section">
+                <div class="range">${escapeTranscriptHtml(row.rangeLabel || 'Transcript')}</div>
+                ${row.turns.length
+                    ? row.turns.map((turn) => `<p><span class="speaker">${escapeTranscriptHtml(speakerLabel(turn.speakerId))}:</span> ${escapeTranscriptHtml(turn.text)}</p>`).join('')
+                    : `<p>${escapeTranscriptHtml(row.transcriptText)}</p>`}
+            </div>
+        `).join('')}
+    </div>
+</body>
+</html>`;
+
+    const buildExportRows = (items, useCleaned) => items
+        .map((item) => {
+            const transcript = useCleaned
+                ? (item.cleanText || item.clean_text || '')
+                : (item.translatedText || item.translated_text || item.text || '');
+            const timestamps = useCleaned
+                ? (item.cleanTimestamps || item.clean_timestamps || [])
+                : (item.timestamps || item.transcription_timestamps || []);
+            const turns = speakerTurnsFromTimestamps(timestamps);
+            const speakerLabels = [...new Set(turns.map((turn) => speakerLabel(turn.speakerId)))];
+
+            return {
+                rangeLabel: item.rangeLabel || item.range_label || '',
+                transcriptText: transcriptTextWithSpeakerTurns(transcript, timestamps),
+                turns,
+                speakerLabels,
+            };
+        })
+        .filter((row) => isUsefulTranscriptText(row.transcriptText));
+
+    const exportTranscriptRows = ({ rows, format, filenameBase, title, variantLabel }) => {
+        const normalizedFormat = String(format || 'txt').toLowerCase();
+
+        if (normalizedFormat === 'excel') {
+            return saveTranscriptExport({
+                filename: `${filenameBase}.xls`,
+                content: exportRowsToSpreadsheetHtml({ title, variantLabel, rows }),
+                mimeType: 'application/vnd.ms-excel;charset=utf-8',
+                extension: 'xls',
+                filterName: 'Excel files',
+            });
+        }
+
+        if (normalizedFormat === 'word') {
+            return saveTranscriptExport({
+                filename: `${filenameBase}.doc`,
+                content: exportRowsToWordHtml({ title, variantLabel, rows }),
+                mimeType: 'application/msword;charset=utf-8',
+                extension: 'doc',
+                filterName: 'Word documents',
+            });
+        }
+
+        return saveTextExport(`${filenameBase}.txt`, exportRowsToText(rows));
+    };
+
+    const withButtonLoading = async ($button, callback) => {
+        if (typeof window.toggleLoading === 'function' && $button?.length) {
+            window.toggleLoading($button, true);
+        }
+
+        try {
+            return await callback();
+        } finally {
+            if (typeof window.toggleLoading === 'function' && $button?.length) {
+                window.toggleLoading($button, false);
+            }
+        }
+    };
+
+    const readNearbyControlValue = (event, selector, fallback = '') => {
+        const $trigger = $(event?.currentTarget || []);
+        const nearby = $trigger.siblings(selector).first().val();
+
+        return nearby !== undefined ? nearby : ($(selector).first().val() ?? fallback);
+    };
+
+    const renderTranscriptText = (text, timestamps = []) => {
+        const turns = speakerTurnsFromTimestamps(timestamps);
 
         if (!turns.length) {
             return `<p class="whitespace-pre-line break-words text-xs leading-5 text-slate-100">${escapeTranscriptHtml(text)}</p>`;
@@ -446,16 +659,9 @@ $(function () {
 
         const formatRelativeClock = (milliseconds) => `+${formatClock(milliseconds)}`;
 
-        const getChunkLengthMs = () => Math.min(maxTranscribeBatchDurationMs, Number($chunkSize.val() || 300) * 1000);
-
-        const clampUploadChunkSize = () => {
-            const selectedSeconds = Number($chunkSize.val() || 300);
-            const maxSeconds = Math.floor(maxTranscribeBatchDurationMs / 1000);
-
-            if (selectedSeconds > maxSeconds) {
-                $chunkSize.val(String(Math.min(1200, maxSeconds)));
-            }
-        };
+        const fixedChunkSeconds = 300;
+        const getChunkLengthMs = () => fixedChunkSeconds * 1000;
+        $chunkSize.val(String(fixedChunkSeconds));
 
         const getUploadPrepareConcurrency = () => Math.max(1, Math.min(
             preparedSections.length || 1,
@@ -1209,9 +1415,11 @@ $(function () {
             }
         };
 
-        const exportTranscript = () => {
+        const exportTranscript = async (event) => {
             const selectedCategory = getUploadCategory();
-            const useCleaned = $exportMode.val() === 'clean';
+            const exportMode = readNearbyControlValue(event, '[data-export-upload-mode]', $exportMode.val() || 'raw');
+            const exportFormat = readNearbyControlValue(event, '[data-export-upload-format]', 'txt');
+            const useCleaned = exportMode === 'clean';
             const completed = useCleaned
                 ? (hasCleanedUploadTranscriptForCategory(selectedCategory)
                     ? cleanedSections.filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || ''))
@@ -1225,12 +1433,20 @@ $(function () {
                 return;
             }
 
-            const content = completed
-                .filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || section.translatedText || section.translated_text || section.text || ''))
-                .map((section) => `${section.rangeLabel || section.range_label || ''}\n${section.cleanText || section.clean_text || section.translatedText || section.translated_text || section.text || ''}`)
-                .join('\n\n');
+            const rows = buildExportRows(completed, useCleaned);
 
-            downloadTextFile(`${slugify(selectedCategory || selectedFile?.name)}-${useCleaned ? 'cleaned' : 'raw'}-transcription.txt`, content);
+            if (!rows.length) {
+                notifyError('No useful transcript text is ready to export yet.');
+                return;
+            }
+
+            await withButtonLoading($(event?.currentTarget || []), () => exportTranscriptRows({
+                rows,
+                format: exportFormat,
+                filenameBase: `${slugify(selectedCategory || selectedFile?.name)}-${useCleaned ? 'cleaned' : 'raw'}-transcription`,
+                title: selectedCategory || selectedFile?.name || 'Upload audio',
+                variantLabel: useCleaned ? 'Cleaned' : 'Raw',
+            }));
         };
 
         const renderVadLogs = (logs, categoryName) => {
@@ -2171,7 +2387,6 @@ $(function () {
         };
 
         const prepareUploadSession = () => {
-            clampUploadChunkSize();
             const formData = new FormData();
 
             if (selectedFile?.localPath) {
@@ -2374,21 +2589,6 @@ $(function () {
             }
         });
 
-        $chunkSize.on('change', function () {
-            clampUploadChunkSize();
-            preparedSections = [];
-            cleanedSections = [];
-            cleanerStatus = 'Waiting';
-            cleanerCompletedBatches = 0;
-            currentSessionId = '';
-            currentCategoryName = '';
-            cancelRequested = false;
-            uploadCancelling = false;
-            clearUploadState();
-            setProcessingState(false);
-            syncPlan();
-            renderQueue();
-        });
 
         $queueButton.on('click', async function () {
             if (!selectedFile || uploadInFlight || !uploadUrl || !audioChunkUrl) {
@@ -2798,7 +2998,7 @@ $(function () {
     const playUrlBase = String($body.data('play-url-base') || '');
     const deleteUrlBase = String($body.data('delete-url-base') || '');
     const defaultUserId = Number($body.data('default-user-id') || 1);
-    const segmentLengthMs = 60 * 1000;
+    const segmentLengthMs = 5 * 60 * 1000;
     const supportsRecorder = Boolean(navigator.mediaDevices && window.MediaRecorder);
     const liveTimelineStorageKey = 'ai-transcriber-live-timeline-cursors';
 
@@ -3008,8 +3208,10 @@ $(function () {
         }
     };
 
-    const exportStoredTranscription = () => {
-        const useCleaned = $('[data-export-live-mode]').val() === 'clean';
+    const exportStoredTranscription = async (event) => {
+        const exportMode = readNearbyControlValue(event, '[data-export-live-mode]', 'raw');
+        const exportFormat = readNearbyControlValue(event, '[data-export-live-format]', 'txt');
+        const useCleaned = exportMode === 'clean';
         const cleanedPayload = window.liveCleanedTranscriptPayload || {};
         const selectedCategory = getCategoryName();
         const items = (useCleaned
@@ -3026,11 +3228,20 @@ $(function () {
             return;
         }
 
-        const content = items
-            .map((item) => `${item.rangeLabel || item.range_label || ''}\n${item.cleanText || item.clean_text || item.translatedText || item.translated_text || ''}`)
-            .join('\n\n');
+        const rows = buildExportRows(items, useCleaned);
 
-        downloadTextFile(`${slugify(selectedCategory)}-${useCleaned ? 'cleaned' : 'raw'}-transcription.txt`, content);
+        if (!rows.length) {
+            notifyError('No useful transcript text is ready to export yet.');
+            return;
+        }
+
+        await withButtonLoading($(event?.currentTarget || []), () => exportTranscriptRows({
+            rows,
+            format: exportFormat,
+            filenameBase: `${slugify(selectedCategory)}-${useCleaned ? 'cleaned' : 'raw'}-transcription`,
+            title: selectedCategory || 'Live transcription',
+            variantLabel: useCleaned ? 'Cleaned' : 'Raw',
+        }));
     };
 
     const renderVadLogs = (logs, categoryName) => {

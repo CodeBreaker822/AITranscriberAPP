@@ -34,6 +34,7 @@ fn main() {
             "open_external_url",
             "save_text_export",
             "save_text_export_with_dialog",
+            "save_transcript_export_with_dialog",
             "choose_audio_file",
             "cancel_offline_whisper",
             "install_update",

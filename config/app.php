@@ -56,6 +56,26 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    'logo_only' => filter_var(env('APP_LOGO_ONLY', false), FILTER_VALIDATE_BOOLEAN),
+
+    'extra_logos' => array_values(array_filter(
+        array_map(
+            fn ($path) => trim($path),
+            explode(',', (string) env('APP_EXTRA_LOGOS', 'branding/logo-1.png,branding/logo-2.png')),
+        ),
+        fn ($path) => $path !== ''
+            && ! str_starts_with($path, '/')
+            && ! str_contains($path, '..')
+            && ! preg_match('/^[a-z][a-z0-9+.-]*:/i', $path),
+    )),
+
+    'footer_license' => filter_var(env('FOOTER_LICENSE', false), FILTER_VALIDATE_BOOLEAN),
+
+    'footer_text' => env(
+        'APP_FOOTER_TEXT',
+        'ASTRA — Adaptive Speech Transcription and Recording Assistant. All rights reserved.',
+    ),
+
     /*
     |--------------------------------------------------------------------------
     | Application Timezone

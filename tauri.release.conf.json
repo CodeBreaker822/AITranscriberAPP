@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@tauri-apps/cli/config.schema.json",
   "build": {
-    "frontendDist": "../public"
+    "frontendDist": "../build/tauri/public"
   },
   "app": {
     "windows": [
@@ -28,7 +28,7 @@
       "../database/factories": "database/factories",
       "../database/migrations": "database/migrations",
       "../database/seeders": "database/seeders",
-      "../public": "public",
+      "../build/tauri/public": "public",
       "../resources": "resources",
       "../routes": "routes",
       "../vendor": "vendor",

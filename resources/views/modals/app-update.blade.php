@@ -1,4 +1,4 @@
-<dialog data-app-update-dialog class="fixed inset-0 z-[70] m-auto hidden w-[min(92vw,34rem)] rounded-lg border border-white/10 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/85">
+<dialog data-app-update-dialog style="z-index: 2147483000;" class="fixed inset-0 z-[70] m-auto hidden w-[min(92vw,34rem)] rounded-lg border border-white/10 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/85">
     <div class="p-6 sm:p-7">
         <div class="flex items-center gap-3">
             <span class="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-cyan-300/15 text-cyan-200">

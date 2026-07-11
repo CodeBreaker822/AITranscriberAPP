@@ -23,6 +23,11 @@
                         <option value="raw">Raw</option>
                         <option value="clean">Cleaned</option>
                     </select>
+                    <select data-export-live-format class="min-h-8 rounded-lg border border-white/10 bg-slate-950/80 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-white outline-none transition focus:border-cyan-300/40 focus:ring-2 focus:ring-cyan-300/20">
+                        <option value="txt">TXT</option>
+                        <option value="excel">Excel</option>
+                        <option value="word">Microsoft Word</option>
+                    </select>
                     <button type="button" data-export-live class="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-white transition hover:border-cyan-300/30 hover:bg-cyan-300/10">
                         <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                             <path d="M12 3v12" />

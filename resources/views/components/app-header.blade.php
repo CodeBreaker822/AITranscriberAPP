@@ -3,20 +3,27 @@
     'hasOfflineTranscriptionModel' => false,
 ])
 
+@php
+    $logoOnly = (bool) config('app.logo_only');
+    $extraLogos = $logoOnly
+        ? []
+        : array_values(array_filter(
+            (array) config('app.extra_logos', []),
+            fn ($path) => is_string($path) && $path !== '' && is_file(public_path($path)),
+        ));
+@endphp
+
 <header data-app-header class="shrink-0 rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 shadow-[0_18px_60px_rgba(0,0,0,0.32)] backdrop-blur-xl">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <a href="{{ route('transcription.live') }}" class="flex min-w-0 items-center gap-3">
             <span class="flex shrink-0 items-center gap-2">
-                <img
-                    src="{{ asset('DILG-Logo.png') }}"
-                    alt="Department of the Interior and Local Government"
-                    class="h-11 w-11 object-contain sm:h-12 sm:w-12"
-                >
-                <img
-                    src="{{ asset('AgSUR-Brand-Logo.png') }}"
-                    alt="Department of the Interior and Local Government"
-                    class="h-11 w-11 object-contain sm:h-12 sm:w-12"
-                >
+                @foreach ($extraLogos as $logoPath)
+                    <img
+                        src="{{ asset($logoPath) }}"
+                        alt="Additional organization logo"
+                        class="h-11 w-11 object-contain sm:h-12 sm:w-12"
+                    >
+                @endforeach
                 <img
                     src="{{ asset('AILogo.png') }}"
                     alt="AI Transcriber"
@@ -26,8 +33,7 @@
 
             <span class="min-w-0">
                 <span class="block text-xl font-semibold tracking-tight text-white sm:text-2xl">ASTRA</span>
-                <span data-brand-description class="mt-0.5 hidden text-xs text-slate-400 sm:block">Agusan del Sur Transcription and Recording Assistant
-                Empower Smarter Governance Through Digital Documentation.</span>
+                <span data-brand-description class="mt-0.5 hidden text-xs text-slate-400 sm:block">Adaptive Speech Transcription and Recording Assistant.</span>
             </span>
         </a>
 

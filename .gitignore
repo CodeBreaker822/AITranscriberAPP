@@ -17,6 +17,7 @@
 /build
 /node_modules
 /public/build
+/public/branding
 /public/fonts-manifest.dev.json
 /public/hot
 /public/storage

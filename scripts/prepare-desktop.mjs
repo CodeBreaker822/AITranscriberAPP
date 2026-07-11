@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -8,9 +8,23 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const runPhp = path.join(projectRoot, 'scripts', 'run-php.mjs');
 const vite = path.join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
 const emptyBuild = process.argv[2] === 'empty';
+const envPath = path.join(projectRoot, '.env');
+const envFile = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
 const tauriConfig = JSON.parse(
     readFileSync(path.join(projectRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'),
 );
+const envValue = (key) => {
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+        return process.env[key];
+    }
+
+    const match = envFile.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`, 'm'));
+
+    return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+};
+const envFlag = (key) => ['1', 'true', 'yes', 'on'].includes(String(envValue(key)).toLowerCase());
+const appLogoOnly = envFlag('APP_LOGO_ONLY');
+const privateBrandingDirectory = path.normalize('branding').toLowerCase();
 const bundledSherpaModels = [
     {
         file: 'pyannote-segmentation-3.0-int8.onnx',
@@ -57,6 +71,34 @@ function prepareVulkanLoader() {
     copyFileSync(source, destination);
 }
 
+function preparePackagedPublicDirectory() {
+    const sourceDirectory = path.join(projectRoot, 'public');
+    const destinationDirectory = path.join(projectRoot, 'build', 'tauri', 'public');
+
+    rmSync(destinationDirectory, { recursive: true, force: true });
+    mkdirSync(destinationDirectory, { recursive: true });
+    cpSync(sourceDirectory, destinationDirectory, {
+        recursive: true,
+        force: true,
+        filter: (sourcePath) => {
+            if (!appLogoOnly) {
+                return true;
+            }
+
+            const relativePath = path.relative(sourceDirectory, sourcePath);
+
+            if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+                return true;
+            }
+
+            const normalizedRelativePath = path.normalize(relativePath).toLowerCase();
+
+            return normalizedRelativePath !== privateBrandingDirectory
+                && !normalizedRelativePath.startsWith(`${privateBrandingDirectory}${path.sep}`);
+        },
+    });
+}
+
 function run(command, args) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
@@ -90,6 +132,7 @@ try {
     await run(process.execPath, [vite, 'build']);
     const buildMetadataDirectory = path.join(projectRoot, 'build', 'tauri');
     mkdirSync(buildMetadataDirectory, { recursive: true });
+    preparePackagedPublicDirectory();
     writeFileSync(
         path.join(buildMetadataDirectory, 'version.json'),
         `${JSON.stringify({

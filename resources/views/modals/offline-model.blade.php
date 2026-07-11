@@ -1,4 +1,4 @@
-<div data-offline-model-dialog aria-hidden="true" class="pointer-events-none fixed inset-0 z-[60] hidden">
+<div data-offline-model-dialog aria-hidden="true" style="z-index: 2147483000;" class="pointer-events-none fixed inset-0 z-[60] hidden">
     <div data-offline-model-backdrop class="pointer-events-auto absolute inset-0 bg-slate-950/75 backdrop-blur-sm"></div>
 
     <section data-offline-model-expanded role="dialog" aria-modal="true" aria-labelledby="offline-model-title" class="pointer-events-auto absolute left-1/2 top-1/2 flex max-h-[calc(100vh-2rem)] w-[min(92vw,34rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-white/10 bg-slate-950 p-4 text-slate-100 shadow-2xl sm:p-5">

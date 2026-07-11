@@ -23,6 +23,11 @@
                         <option value="raw">Raw</option>
                         <option value="clean">Cleaned</option>
                     </select>
+                    <select data-export-upload-format class="min-h-8 rounded-lg border border-white/10 bg-slate-950/80 px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-white outline-none transition focus:border-cyan-300/40 focus:ring-2 focus:ring-cyan-300/20">
+                        <option value="txt">TXT</option>
+                        <option value="excel">Excel</option>
+                        <option value="word">Microsoft Word</option>
+                    </select>
                     <button type="button" data-export-upload class="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-white transition hover:border-cyan-300/30 hover:bg-cyan-300/10">
                         <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                             <path d="M12 3v12" />
@@ -56,7 +61,7 @@
                     <h1 class="text-xl font-semibold tracking-tight text-white">Audio to Text Converter</h1>
 
                     <form data-upload-form class="mt-2 space-y-2" action="#" method="post" enctype="multipart/form-data">
-                        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        <div class="grid grid-cols-2 gap-2">
                             <div class="relative z-50">
                                 <label class="block">
                                     <span class="text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-slate-400">Project Name</span>
@@ -83,15 +88,7 @@
                                 </select>
                             </label>
 
-                            <label class="block">
-                                <span class="text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-slate-400">Chunk length</span>
-                                <select name="chunk_seconds" class="mt-1 w-full rounded-lg border border-white/10 bg-slate-950/80 px-2.5 py-1.5 text-[0.72rem] text-white outline-none transition focus:border-cyan-300/40 focus:ring-2 focus:ring-cyan-300/20" data-upload-chunk-size>
-                                    <option value="300">5 minutes</option>
-                                    <option value="600">10 minutes</option>
-                                    <option value="900">15 minutes</option>
-                                    <option value="1200">20 minutes</option>
-                                </select>
-                            </label>
+                            <input type="hidden" name="chunk_seconds" value="300" data-upload-chunk-size>
 
                         </div>
 

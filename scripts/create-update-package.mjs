@@ -31,6 +31,20 @@ const tauriConfig = JSON.parse(
 const version = tauriConfig.version;
 const platformName = `windows-${process.arch}`;
 const defaultOutputDirectory = path.join(releaseRoot, 'bundle', 'updates');
+const envPath = path.join(projectRoot, '.env');
+const envFile = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+const envValue = (key) => {
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+        return process.env[key];
+    }
+
+    const match = envFile.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`, 'm'));
+
+    return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+};
+const envFlag = (key) => ['1', 'true', 'yes', 'on'].includes(String(envValue(key)).toLowerCase());
+const appLogoOnly = envFlag('APP_LOGO_ONLY');
+const privateBrandingPayloadDirectory = path.normalize('public/branding').toLowerCase();
 const bundledSherpaModels = [
     {
         file: 'pyannote-segmentation-3.0-int8.onnx',
@@ -93,6 +107,23 @@ function isGitMetadataPath(value) {
     return path.normalize(value)
         .split(path.sep)
         .some((part) => ['.git', '.git-broken'].includes(part.toLowerCase()));
+}
+
+function isLogoOnlyExcludedPath(value) {
+    if (!appLogoOnly) {
+        return false;
+    }
+
+    const relative = path.relative(releaseRoot, value);
+
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        return false;
+    }
+
+    const normalizedRelativePath = path.normalize(relative).toLowerCase();
+
+    return normalizedRelativePath === privateBrandingPayloadDirectory
+        || normalizedRelativePath.startsWith(`${privateBrandingPayloadDirectory}${path.sep}`);
 }
 
 function run(command, args, options = {}) {
@@ -193,7 +224,7 @@ function copyPayload(stagingDirectory) {
         cpSync(source, destination, {
             recursive: true,
             force: true,
-            filter: (sourcePath) => !isGitMetadataPath(sourcePath),
+            filter: (sourcePath) => !isGitMetadataPath(sourcePath) && !isLogoOnlyExcludedPath(sourcePath),
         });
     }
 }
