@@ -1,20 +1,3 @@
-@php
-    $providerPayload = collect($transcriptionProviders)
-        ->mapWithKeys(fn (array $provider, string $key): array => [
-            $key => [
-                'models' => collect($provider['models'] ?? [])
-                    ->filter(fn ($model): bool => is_array($model) && filled($model['id'] ?? null))
-                    ->map(fn (array $model): array => [
-                        'id' => (string) $model['id'],
-                        'label' => (string) ($model['label'] ?? $model['id']),
-                    ])
-                    ->values()
-                    ->all(),
-            ],
-        ])
-        ->all();
-@endphp
-
 <x-app-layout title="Settings | AI Transcriber" active-page="settings">
     <div data-settings-workspace class="mx-auto max-w-4xl space-y-4">
         <section class="rounded-lg border border-white/10 bg-slate-950/70 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.32)] backdrop-blur-xl">

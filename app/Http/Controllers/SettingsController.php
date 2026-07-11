@@ -30,6 +30,7 @@ class SettingsController extends Controller
         }
 
         $provider = $settings->speechToTextProvider();
+        $transcriptionProviders = $settings->transcriptionProviderOptions();
 
         return view('pages.settings', [
             'apiBaseUrl' => $settings->apiBaseUrl(),
@@ -38,13 +39,36 @@ class SettingsController extends Controller
             'licenseStatusLabel' => $settings->licenseStatusLabel(),
             'licenseStatusMessage' => $settings->licenseStatusMessage(),
             'licenseRefreshError' => $licenseRefreshError,
-            'transcriptionProviders' => $settings->transcriptionProviderOptions(),
+            'transcriptionProviders' => $transcriptionProviders,
+            'providerPayload' => $this->providerPayload($transcriptionProviders),
             'selectedProvider' => $provider,
             'selectedModel' => $settings->speechToTextModel($provider),
             'resourceProfile' => $settings->resourceProfile(),
             'audioMemory' => $audioMemory->snapshot(),
             'transcriptMemory' => $transcriptMemory->snapshot(),
         ]);
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $providers
+     * @return array<string, array{models: array<int, array{id: string, label: string}>}>
+     */
+    private function providerPayload(array $providers): array
+    {
+        return collect($providers)
+            ->mapWithKeys(fn (array $provider, string $key): array => [
+                $key => [
+                    'models' => collect($provider['models'] ?? [])
+                        ->filter(fn ($model): bool => is_array($model) && filled($model['id'] ?? null))
+                        ->map(fn (array $model): array => [
+                            'id' => (string) $model['id'],
+                            'label' => (string) ($model['label'] ?? $model['id']),
+                        ])
+                        ->values()
+                        ->all(),
+                ],
+            ])
+            ->all();
     }
 
     public function help(): View

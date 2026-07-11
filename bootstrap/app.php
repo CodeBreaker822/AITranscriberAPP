@@ -24,7 +24,8 @@ if ($storagePath = env('APP_STORAGE_PATH')) {
     $app->useStoragePath($storagePath);
 }
 
-$processTempPath = storage_path('framework/process-temp');
+$processTempPath = env('APP_PROCESS_TEMP_PATH')
+    ?: storage_path('framework/process-temp/process-'.getmypid());
 if (! is_dir($processTempPath)) {
     @mkdir($processTempPath, 0777, true);
 }

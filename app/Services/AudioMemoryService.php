@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Models\AudioChunk;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 
@@ -12,6 +12,8 @@ class AudioMemoryService
         'audio-upload-sessions',
         'audio-upload-chunks',
     ];
+
+    public function __construct(private readonly StoredAudioService $storedAudio) {}
 
     public function snapshot(): array
     {
@@ -59,10 +61,18 @@ class AudioMemoryService
         $before = $this->storedAudioSnapshot();
 
         if (Schema::hasTable('audio_chunks')) {
-            DB::table('audio_chunks')
+            AudioChunk::query()
+                ->whereNotNull('audio_path')
+                ->pluck('audio_path')
+                ->each(fn (string $path) => $this->storedAudio->delete($path));
+
+            AudioChunk::query()
                 ->where('file_size_bytes', '>', 0)
                 ->update([
                     'audio_blob' => '',
+                    'audio_path' => null,
+                    'audio_size' => null,
+                    'audio_hash' => null,
                     'file_size_bytes' => 0,
                     'mime_type' => null,
                     'updated_at' => now(),
@@ -100,19 +110,19 @@ class AudioMemoryService
             ];
         }
 
-        $audioRows = DB::table('audio_chunks')
-            ->selectRaw('COUNT(CASE WHEN file_size_bytes > 0 THEN 1 END) as records, COALESCE(SUM(file_size_bytes), 0) as bytes')
-            ->first();
-
-        $uploadRecords = DB::table('audio_chunks')
-            ->where('original_name', 'like', 'chunk_%.wav')
-            ->where('file_size_bytes', '>', 0)
+        $audioRows = AudioChunk::query()
+            ->get(['audio_size', 'file_size_bytes', 'original_name']);
+        $records = $audioRows
+            ->filter(fn (AudioChunk $row): bool => (int) ($row->audio_size ?? $row->file_size_bytes ?? 0) > 0)
+            ->count();
+        $bytes = $audioRows->sum(fn (AudioChunk $row): int => (int) ($row->audio_size ?? $row->file_size_bytes ?? 0));
+        $uploadRecords = $audioRows
+            ->filter(fn (AudioChunk $row): bool => preg_match('/^chunk_.*\.wav$/i', (string) $row->original_name) === 1
+                && (int) ($row->file_size_bytes ?? 0) > 0)
             ->count();
 
-        $records = (int) ($audioRows->records ?? 0);
-
         return [
-            'bytes' => (int) ($audioRows->bytes ?? 0),
+            'bytes' => (int) $bytes,
             'records' => $records,
             'live_records' => max(0, $records - $uploadRecords),
             'upload_records' => (int) $uploadRecords,

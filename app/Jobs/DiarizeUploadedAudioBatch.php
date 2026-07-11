@@ -2,92 +2,195 @@
 
 namespace App\Jobs;
 
+use App\Models\AudioChunk;
+use App\Services\AudioFileChunkerService;
+use App\Services\AudioChunk\UploadedDiarizationService;
 use App\Services\SpeakerDiarizationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\File;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class DiarizeUploadedAudioBatch implements ShouldQueue
 {
-    use Queueable;
+    use InteractsWithQueue, Queueable;
 
     public int $timeout = 0;
 
+    public int $tries = 3;
+
+    public array $backoff = [5, 15, 30];
+
     /**
-     * @param  array<int, int>  $audioChunkIds
+     * @param  array<int, string>  $audioChunkPaths  Audio chunk ID => retained prepared WAV path.
      */
     public function __construct(
-        public array $audioChunkIds,
+        public array $audioChunkPaths,
         public string $speakerSessionId,
+        public string $uploadSessionId,
         public bool $finalizeSession = false,
     ) {
-        $this->audioChunkIds = array_values(array_unique(array_map('intval', $audioChunkIds)));
+        $this->audioChunkPaths = collect($audioChunkPaths)
+            ->mapWithKeys(fn (string $path, int|string $id): array => [(int) $id => $path])
+            ->filter(fn (string $path, int $id): bool => $id > 0 && trim($path) !== '')
+            ->all();
     }
 
-    public function handle(SpeakerDiarizationService $speakerDiarization): void
+    public function middleware(): array
     {
-        foreach ($this->audioChunkIds as $audioChunkId) {
-            $row = DB::table('audio_chunks')->where('id', $audioChunkId)->first();
+        return [
+            (new WithoutOverlapping('diarize-upload-'.$this->speakerSessionId))
+                ->releaseAfter(5)
+                ->expireAfter(1800),
+        ];
+    }
 
-            if (! $row || ! is_string($row->audio_blob) || $row->audio_blob === '') {
-                Log::warning('Queued speaker diarization skipped a missing audio chunk.', [
-                    'audio_chunk_id' => $audioChunkId,
-                    'speaker_session_id' => $this->speakerSessionId,
-                ]);
+    public function handle(
+        SpeakerDiarizationService $speakerDiarization,
+        AudioFileChunkerService $chunker,
+        ?UploadedDiarizationService $uploadedDiarization = null,
+    ): void {
+        $uploadedDiarization ??= app(UploadedDiarizationService::class);
+
+        foreach ($this->audioChunkPaths as $audioChunkId => $audioPath) {
+            $row = AudioChunk::query()->find($audioChunkId);
+
+            if (! $row) {
+                @unlink($audioPath);
 
                 continue;
             }
 
-            $directory = storage_path('app/private/speaker-diarization-queue');
-            File::ensureDirectoryExists($directory);
-            $audioPath = $directory.DIRECTORY_SEPARATOR.'chunk-'.$audioChunkId.'-'.bin2hex(random_bytes(6)).'.wav';
+            if ($row->status === 'transcribed') {
+                @unlink($audioPath);
+
+                continue;
+            }
+
+            $row->forceFill([
+                'status' => 'diarization_processing',
+            ])->save();
 
             try {
-                if (file_put_contents($audioPath, $row->audio_blob) === false) {
-                    throw new \RuntimeException('Queued audio could not be written for speaker diarization.');
-                }
-
+                $this->assertPreparedAudioPath($audioPath);
                 $transcription = [
                     'text' => (string) ($row->translated_text ?? ''),
-                    'timestamps' => is_string($row->transcription_timestamps)
-                        ? (json_decode($row->transcription_timestamps, true) ?: [])
+                    'timestamps' => is_array($row->transcription_timestamps)
+                        ? $row->transcription_timestamps
                         : [],
                 ];
-                $merged = $speakerDiarization->apply($audioPath, $transcription, [
+
+                if ($transcription['timestamps'] !== []) {
+                    $merged = $speakerDiarization->apply($audioPath, $transcription, [
+                        'clip_start_ms' => (int) $row->clip_start_ms,
+                        'speaker_session_id' => $this->speakerSessionId,
+                        'throw_on_failure' => true,
+                    ]);
+
+                    $row->forceFill([
+                        'translated_text' => (string) ($merged['text'] ?? $transcription['text']),
+                        'transcription_timestamps' => $merged['timestamps'] ?? $transcription['timestamps'],
+                        'status' => 'transcribed',
+                    ])->save();
+                    @unlink($audioPath);
+
+                    continue;
+                }
+
+                $segments = $speakerDiarization->diarizeSegments($audioPath, [
                     'clip_start_ms' => (int) $row->clip_start_ms,
                     'speaker_session_id' => $this->speakerSessionId,
+                    'throw_on_failure' => true,
                 ]);
 
-                DB::table('audio_chunks')
-                    ->where('id', $audioChunkId)
-                    ->where('clip_index', (int) $row->clip_index)
-                    ->update([
-                        'translated_text' => (string) ($merged['text'] ?? $transcription['text']),
-                        'transcription_timestamps' => json_encode($merged['timestamps'] ?? $transcription['timestamps']),
-                        'status' => 'transcribed',
-                        'updated_at' => now(),
-                    ]);
+                $uploadedDiarization->finishDiarization($row->refresh(), $audioPath, $segments, $this->speakerSessionId);
             } catch (Throwable $exception) {
-                Log::warning('Queued speaker diarization failed.', [
+                $row->forceFill([
+                    'status' => 'diarization_retrying',
+                ])->save();
+                Log::warning('Queued speaker diarization attempt failed.', [
                     'error' => $exception->getMessage(),
                     'audio_chunk_id' => $audioChunkId,
                     'speaker_session_id' => $this->speakerSessionId,
+                    'attempt' => $this->attempts(),
                 ]);
 
-                DB::table('audio_chunks')->where('id', $audioChunkId)->update([
-                    'status' => 'transcribed',
-                    'updated_at' => now(),
-                ]);
-            } finally {
-                @unlink($audioPath);
+                throw $exception;
             }
         }
 
-        if ($this->finalizeSession) {
-            $speakerDiarization->releaseSession($this->speakerSessionId);
+        $this->finalizeUploadSessionIfReady($speakerDiarization, $chunker);
+    }
+
+    public function failed(?Throwable $exception): void
+    {
+        $ids = array_keys($this->audioChunkPaths);
+
+        AudioChunk::query()
+            ->whereKey($ids)
+            ->whereIn('status', ['diarization_queued', 'diarization_processing', 'diarization_retrying', 'diarization_waiting_transcript'])
+            ->update([
+                'status' => 'diarization_failed',
+                'updated_at' => now(),
+            ]);
+
+        foreach ($this->audioChunkPaths as $audioPath) {
+            @unlink($audioPath);
         }
+
+        Log::error('Queued speaker diarization exhausted all retries.', [
+            'error' => $exception?->getMessage(),
+            'audio_chunk_ids' => $ids,
+            'speaker_session_id' => $this->speakerSessionId,
+        ]);
+
+        $this->finalizeUploadSessionIfReady(
+            app(SpeakerDiarizationService::class),
+            app(AudioFileChunkerService::class),
+        );
+    }
+
+    private function assertPreparedAudioPath(string $audioPath): void
+    {
+        $root = realpath(storage_path('app/private/audio-upload-sessions'));
+        $path = realpath($audioPath);
+
+        if (! is_string($root)
+            || ! is_string($path)
+            || ! str_starts_with($path, rtrim($root, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)
+            || preg_match('/^chunk_\d+(?:-speech)?\.wav$/i', basename($path)) !== 1) {
+            throw new \RuntimeException('Queued speaker diarization audio is missing or invalid.');
+        }
+    }
+
+    private function uploadSessionDiarizationFinished(): bool
+    {
+        $safeSessionId = preg_replace('/[^A-Za-z0-9._-]+/', '-', trim($this->uploadSessionId)) ?: 'recordings';
+
+        return ! AudioChunk::query()
+            ->where('audio_path', 'like', 'audio/'.$safeSessionId.'/%')
+            ->whereIn('status', ['diarization_queued', 'diarization_processing', 'diarization_retrying', 'diarization_waiting_transcript'])
+            ->exists();
+    }
+
+    private function finalizeUploadSessionIfReady(
+        SpeakerDiarizationService $speakerDiarization,
+        AudioFileChunkerService $chunker,
+    ): void {
+        if (! $this->finalizeSession) {
+            return;
+        }
+
+        if ($this->uploadSessionDiarizationFinished()) {
+            $speakerDiarization->releaseSession($this->speakerSessionId);
+            $chunker->cleanupSession($this->uploadSessionId);
+
+            return;
+        }
+
+        self::dispatch([], $this->speakerSessionId, $this->uploadSessionId, true)
+            ->delay(now()->addSeconds(5));
     }
 }

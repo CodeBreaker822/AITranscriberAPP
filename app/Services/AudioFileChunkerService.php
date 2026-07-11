@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 use SplFileInfo;
@@ -315,7 +316,7 @@ class AudioFileChunkerService
 
             if (! is_string($path)
                 || ! str_starts_with($path, $sessionPrefix)
-                || preg_match('/^chunk_\d+(?:-speech)?\.wav$/i', basename($path)) !== 1) {
+                || preg_match('/^chunk_\d+(?:(?:-speech)?\.wav|(?:-speech)?-online\.ogg)$/i', basename($path)) !== 1) {
                 continue;
             }
 
@@ -337,6 +338,17 @@ class AudioFileChunkerService
 
         if (str_starts_with($directory, $sessionPrefix) && $directory !== $sessionRoot) {
             File::deleteDirectory($directory);
+        }
+    }
+
+    public function sessionAvailable(string $sessionId): bool
+    {
+        try {
+            $this->readSession($sessionId);
+
+            return true;
+        } catch (RuntimeException) {
+            return false;
         }
     }
 
@@ -393,6 +405,12 @@ class AudioFileChunkerService
         $process->run();
 
         if (! $process->isSuccessful()) {
+            Log::error('Audio processing command failed.', [
+                'executable' => basename((string) ($command[0] ?? '')),
+                'exit_code' => $process->getExitCode(),
+                'stderr' => trim($process->getErrorOutput()),
+            ]);
+
             throw new RuntimeException(ServiceUserMessage::audioPrepareFailed());
         }
 

@@ -10,8 +10,7 @@ class SpeakerDiarizationService
     public function __construct(
         private readonly SpeakerDiarizationModelService $models,
         private readonly AppSettingsService $settings,
-    ) {
-    }
+    ) {}
 
     /**
      * Speaker separation is deliberately best-effort. A local model or worker
@@ -65,6 +64,10 @@ class SpeakerDiarizationService
             ]);
 
             if ($payload === null) {
+                if (($options['throw_on_failure'] ?? false) === true) {
+                    throw new \RuntimeException('Speaker diarization worker is unavailable.');
+                }
+
                 return [];
             }
 
@@ -86,6 +89,10 @@ class SpeakerDiarizationService
                 'error' => $exception->getMessage(),
                 'audio' => basename($audioPath),
             ]);
+
+            if (($options['throw_on_failure'] ?? false) === true) {
+                throw $exception;
+            }
 
             return [];
         }

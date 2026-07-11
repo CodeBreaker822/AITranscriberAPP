@@ -1,8 +1,3 @@
-@php
-    $languageOptions = app(\App\Services\AppSettingsService::class)->speechToTextLanguageOptions();
-    $whisperModels = app(\App\Services\OfflineWhisperModelService::class)->catalog();
-@endphp
-
 <x-app-layout title="Live Transcription | AI Transcriber" active-page="live">
     <div data-workspace class="h-full min-h-0 overflow-hidden">
         <div data-workspace-grid class="grid h-full min-h-0 grid-rows-[1fr_auto] gap-3 lg:grid-cols-[1.35fr_0.65fr] lg:grid-rows-1">

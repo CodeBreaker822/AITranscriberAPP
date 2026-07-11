@@ -723,8 +723,8 @@ fn start_laravel(app: &tauri::AppHandle) -> Result<(), String> {
     );
     queue_command
         .arg("queue:work")
-        .arg("--tries=1")
         .arg("--sleep=1")
+        .arg("--tries=3")
         .arg("--timeout=0")
         .stdout(Stdio::from(queue_stdout))
         .stderr(Stdio::from(queue_stderr));

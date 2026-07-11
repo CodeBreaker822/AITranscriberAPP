@@ -3,16 +3,35 @@
 namespace Tests\Feature;
 
 use App\Services\AudioFileChunkerService;
+use App\Services\OnlineAudioTransportService;
 use App\Services\SpeechAudioFilterService;
 use App\Services\SpeechToTextService;
+use App\Services\StoredAudioService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class AudioChunkNoSpeechTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->mock(StoredAudioService::class, function ($mock): void {
+            $mock->shouldReceive('persistWav')->zeroOrMoreTimes()->andReturnUsing(
+                fn (string $path, string $sessionId, int $id): array => [
+                    'audio_path' => 'audio/'.$sessionId.'/'.$id.'.flac',
+                    'audio_size' => filesize($path) ?: 1,
+                    'audio_hash' => hash_file('sha256', $path) ?: str_repeat('0', 64),
+                    'mime_type' => 'audio/flac',
+                ],
+            );
+        });
+    }
 
     public function test_live_chunks_without_speech_are_not_stored(): void
     {
@@ -148,7 +167,7 @@ class AudioChunkNoSpeechTest extends TestCase
         $this->assertDatabaseHas('audio_chunks', [
             'category_name' => 'Meeting',
             'original_name' => 'live_00002.wav',
-            'mime_type' => 'audio/wav',
+            'mime_type' => 'audio/flac',
             'file_size_bytes' => strlen('prepared wav bytes'),
             'translated_text' => 'Maayong buntag.',
         ]);
@@ -446,6 +465,7 @@ class AudioChunkNoSpeechTest extends TestCase
 
     public function test_prepared_uploaded_sections_can_be_stored_as_a_transcription_batch(): void
     {
+        Queue::fake();
         $sourceOnePath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-source-a-');
         $speechOnePath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-speech-a-');
         $sourceTwoPath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-source-b-');
@@ -484,11 +504,32 @@ class AudioChunkNoSpeechTest extends TestCase
                 'size' => filesize($speechTwoPath),
                 'duration_ms' => 275000,
             ]);
-            $mock->shouldReceive('cleanupSession')->once()->with('batch-test-session');
+            $mock->shouldReceive('cleanupProcessedFiles')->once();
         });
 
         $this->mock(SpeechAudioFilterService::class, function ($mock): void {
             $mock->shouldReceive('prepare')->never();
+        });
+
+        $this->mock(OnlineAudioTransportService::class, function ($mock) use ($speechOnePath, $speechTwoPath): void {
+            $mock->shouldReceive('fromPreparedWav')->once()->withArgs(
+                fn (array $audio): bool => ($audio['path'] ?? null) === $speechOnePath,
+            )->andReturn([
+                'path' => $speechOnePath,
+                'name' => 'chunk_00001-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechOnePath),
+                'duration_ms' => 280000,
+            ]);
+            $mock->shouldReceive('fromPreparedWav')->once()->withArgs(
+                fn (array $audio): bool => ($audio['path'] ?? null) === $speechTwoPath,
+            )->andReturn([
+                'path' => $speechTwoPath,
+                'name' => 'chunk_00002-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechTwoPath),
+                'duration_ms' => 275000,
+            ]);
         });
 
         $this->mock(SpeechToTextService::class, function ($mock) use ($speechOnePath, $speechTwoPath): void {
@@ -568,6 +609,147 @@ class AudioChunkNoSpeechTest extends TestCase
             'category_name' => 'Batch meeting',
             'original_name' => 'chunk_00002-speech.wav',
             'translated_text' => 'Batch second transcript.',
+        ]);
+    }
+
+    public function test_later_upload_batches_send_batch_relative_timings_to_the_transcription_server(): void
+    {
+        Queue::fake();
+        $sourceFivePath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-source-e-');
+        $speechFivePath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-speech-e-');
+        $sourceSixPath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-source-f-');
+        $speechSixPath = tempnam(sys_get_temp_dir(), 'aitranscriber-batch-speech-f-');
+        file_put_contents($sourceFivePath, 'source five bytes');
+        file_put_contents($speechFivePath, 'speech five bytes');
+        file_put_contents($sourceSixPath, 'source six bytes');
+        file_put_contents($speechSixPath, 'speech six bytes');
+
+        $this->mock(AudioFileChunkerService::class, function ($mock) use ($sourceFivePath, $speechFivePath, $sourceSixPath, $speechSixPath): void {
+            $mock->shouldReceive('sessionAudioFile')->once()->with('later-batch-session', 'chunk_00005.wav')->andReturn([
+                'path' => $sourceFivePath,
+                'name' => 'chunk_00005.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($sourceFivePath),
+                'duration_ms' => 300000,
+            ]);
+            $mock->shouldReceive('sessionAudioFile')->once()->with('later-batch-session', 'chunk_00005-speech.wav')->andReturn([
+                'path' => $speechFivePath,
+                'name' => 'chunk_00005-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechFivePath),
+                'duration_ms' => 300000,
+            ]);
+            $mock->shouldReceive('sessionAudioFile')->once()->with('later-batch-session', 'chunk_00006.wav')->andReturn([
+                'path' => $sourceSixPath,
+                'name' => 'chunk_00006.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($sourceSixPath),
+                'duration_ms' => 300000,
+            ]);
+            $mock->shouldReceive('sessionAudioFile')->once()->with('later-batch-session', 'chunk_00006-speech.wav')->andReturn([
+                'path' => $speechSixPath,
+                'name' => 'chunk_00006-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechSixPath),
+                'duration_ms' => 300000,
+            ]);
+            $mock->shouldReceive('cleanupProcessedFiles')->once();
+        });
+
+        $this->mock(OnlineAudioTransportService::class, function ($mock) use ($speechFivePath, $speechSixPath): void {
+            $mock->shouldReceive('fromPreparedWav')->once()->withArgs(
+                fn (array $audio): bool => ($audio['path'] ?? null) === $speechFivePath,
+            )->andReturn([
+                'path' => $speechFivePath,
+                'name' => 'chunk_00005-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechFivePath),
+                'duration_ms' => 300000,
+            ]);
+            $mock->shouldReceive('fromPreparedWav')->once()->withArgs(
+                fn (array $audio): bool => ($audio['path'] ?? null) === $speechSixPath,
+            )->andReturn([
+                'path' => $speechSixPath,
+                'name' => 'chunk_00006-speech.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($speechSixPath),
+                'duration_ms' => 300000,
+            ]);
+        });
+
+        $this->mock(SpeechToTextService::class, function ($mock) use ($speechFivePath, $speechSixPath): void {
+            $mock->shouldReceive('transcribeBatch')->once()->with([
+                ['audio' => $speechFivePath, 'clip_index' => 5, 'clip_start_ms' => 0, 'clip_end_ms' => 300000],
+                ['audio' => $speechSixPath, 'clip_index' => 6, 'clip_start_ms' => 300000, 'clip_end_ms' => 600000],
+            ], [
+                'language_code' => 'en',
+                'engine' => 'online',
+                'model' => 'tiny',
+                'release_worker' => true,
+            ])->andReturn([
+                [
+                    'clip_index' => 5,
+                    'queue_index' => 0,
+                    'text' => 'Later batch first transcript.',
+                    'timestamps' => [],
+                ],
+                [
+                    'clip_index' => 6,
+                    'queue_index' => 1,
+                    'text' => 'Later batch second transcript.',
+                    'timestamps' => [],
+                ],
+            ]);
+        });
+
+        try {
+            $response = $this->postJson('/audio-chunks/batch', [
+                'upload_session_id' => 'later-batch-session',
+                'category_name' => 'Later batch meeting',
+                'language_code' => 'en',
+                'transcription_engine' => 'online',
+                'whisper_model' => 'tiny',
+                'speaker_session_id' => 'later-batch-session',
+                'finalize_session' => true,
+                'sections' => [
+                    [
+                        'clip_index' => 5,
+                        'clip_start_ms' => 1200000,
+                        'clip_end_ms' => 1500000,
+                        'range_label' => '20:00-25:00',
+                        'duration_ms' => 300000,
+                        'source_name' => 'chunk_00005.wav',
+                        'prepared_name' => 'chunk_00005-speech.wav',
+                    ],
+                    [
+                        'clip_index' => 6,
+                        'clip_start_ms' => 1500000,
+                        'clip_end_ms' => 1800000,
+                        'range_label' => '25:00-30:00',
+                        'duration_ms' => 300000,
+                        'source_name' => 'chunk_00006.wav',
+                        'prepared_name' => 'chunk_00006-speech.wav',
+                    ],
+                ],
+            ]);
+        } finally {
+            @unlink($sourceFivePath);
+            @unlink($speechFivePath);
+            @unlink($sourceSixPath);
+            @unlink($speechSixPath);
+        }
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('data.0.translated_text', 'Later batch first transcript.')
+            ->assertJsonPath('data.1.translated_text', 'Later batch second transcript.');
+
+        $this->assertDatabaseHas('audio_chunks', [
+            'category_name' => 'Later batch meeting',
+            'clip_index' => 5,
+            'clip_start_ms' => 1200000,
+            'clip_end_ms' => 1500000,
+            'translated_text' => 'Later batch first transcript.',
         ]);
     }
 

@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AudioVadLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class AudioVadLogController extends Controller
 {
@@ -15,7 +15,7 @@ class AudioVadLogController extends Controller
             'source_type' => ['nullable', 'string', 'in:live,upload'],
         ]);
 
-        $query = DB::table('audio_vad_logs')
+        $query = AudioVadLog::query()
             ->where('category_name', trim((string) $validated['category_name']));
 
         if (! empty($validated['source_type'])) {
@@ -28,7 +28,7 @@ class AudioVadLogController extends Controller
             ->orderBy('id')
             ->get()
             ->map(function ($row): array {
-                $segments = $this->segments($row->speech_segments, (int) $row->clip_start_ms);
+                    $segments = $this->segments($row->speech_segments, (int) $row->clip_start_ms);
 
                 return [
                     'id' => $row->id,
@@ -60,15 +60,13 @@ class AudioVadLogController extends Controller
         ]);
     }
 
-    private function segments(?string $encoded, int $clipStartMs): array
+    private function segments(mixed $segments, int $clipStartMs): array
     {
-        if (! $encoded) {
+        if (! $segments) {
             return [];
         }
 
-        $decoded = json_decode($encoded, true);
-
-        if (! is_array($decoded)) {
+        if (! is_array($segments)) {
             return [];
         }
 
@@ -92,7 +90,7 @@ class AudioVadLogController extends Controller
                     'absolute_end_ms' => $clipStartMs + $endMs,
                 ];
             },
-            $decoded,
+            $segments,
         )));
     }
 }

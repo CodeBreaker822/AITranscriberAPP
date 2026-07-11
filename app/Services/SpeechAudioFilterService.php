@@ -2,7 +2,8 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Models\AudioVadLog;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -108,28 +109,33 @@ class SpeechAudioFilterService
             return;
         }
 
-        DB::table('audio_vad_logs')->insert([
-            'user_id' => (int) ($context['user_id'] ?? 1),
-            'category_name' => $context['category_name'] ?? null,
-            'source_type' => (string) ($context['source_type'] ?? 'unknown'),
-            'clip_index' => (int) ($context['clip_index'] ?? 0),
-            'clip_start_ms' => (int) ($context['clip_start_ms'] ?? 0),
-            'clip_end_ms' => (int) ($context['clip_end_ms'] ?? 0),
-            'range_label' => (string) ($context['range_label'] ?? ''),
-            'duration_ms' => (int) ($context['duration_ms'] ?? ($input['duration_ms'] ?? 0)),
-            'speech_detected' => $speechDetected,
-            'speech_duration_ms' => (int) ($vad['speech_ms'] ?? 0),
-            'segment_count' => count($vad['segments'] ?? []),
-            'speech_segments' => json_encode($vad['segments'] ?? []),
-            'input_name' => $input['name'] ?? null,
-            'input_size_bytes' => (int) ($input['size'] ?? 0),
-            'filtered_name' => $filtered['name'] ?? null,
-            'filtered_size_bytes' => (int) ($filtered['size'] ?? 0),
-            'status' => $speechDetected ? 'speech_detected' : 'no_speech',
-            'message' => $speechDetected ? null : 'Local VAD detected no speech; hosted transcription was skipped.',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        try {
+            AudioVadLog::query()->create([
+                'user_id' => (int) ($context['user_id'] ?? 1),
+                'category_name' => $context['category_name'] ?? null,
+                'source_type' => (string) ($context['source_type'] ?? 'unknown'),
+                'clip_index' => (int) ($context['clip_index'] ?? 0),
+                'clip_start_ms' => (int) ($context['clip_start_ms'] ?? 0),
+                'clip_end_ms' => (int) ($context['clip_end_ms'] ?? 0),
+                'range_label' => (string) ($context['range_label'] ?? ''),
+                'duration_ms' => (int) ($context['duration_ms'] ?? ($input['duration_ms'] ?? 0)),
+                'speech_detected' => $speechDetected,
+                'speech_duration_ms' => (int) ($vad['speech_ms'] ?? 0),
+                'segment_count' => count($vad['segments'] ?? []),
+                'speech_segments' => $vad['segments'] ?? [],
+                'input_name' => $input['name'] ?? null,
+                'input_size_bytes' => (int) ($input['size'] ?? 0),
+                'filtered_name' => $filtered['name'] ?? null,
+                'filtered_size_bytes' => (int) ($filtered['size'] ?? 0),
+                'status' => $speechDetected ? 'speech_detected' : 'no_speech',
+                'message' => $speechDetected ? null : 'Local VAD detected no speech; hosted transcription was skipped.',
+            ]);
+        } catch (\Throwable $exception) {
+            Log::warning('Audio VAD log could not be recorded.', [
+                'message' => $exception->getMessage(),
+                'clip_index' => (int) ($context['clip_index'] ?? 0),
+            ]);
+        }
     }
 
     private function probeDurationMs(string $path): int

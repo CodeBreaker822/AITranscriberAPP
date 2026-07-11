@@ -144,8 +144,9 @@ try {
     start('Queue worker', php, [
         'artisan',
         'queue:work',
-        '--tries=1',
         '--sleep=1',
+        '--tries=3',
+        '--timeout=0',
     ]);
 } catch (error) {
     stop(`Local development startup failed: ${error.message}`);

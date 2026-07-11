@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Models\AudioChunk;
+use App\Models\CleanTranscriptChunk;
+use App\Models\TranscriptSummary;
 use Illuminate\Support\Facades\Schema;
 
 class TranscriptMemoryService
@@ -31,17 +33,17 @@ class TranscriptMemoryService
     {
         $before = $this->snapshot();
 
-        DB::transaction(function (): void {
+        CleanTranscriptChunk::query()->getConnection()->transaction(function (): void {
             if (Schema::hasTable('transcript_summaries')) {
-                DB::table('transcript_summaries')->delete();
+                TranscriptSummary::query()->delete();
             }
 
             if (Schema::hasTable('clean_transcript_chunks')) {
-                DB::table('clean_transcript_chunks')->delete();
+                CleanTranscriptChunk::query()->delete();
             }
 
             if (Schema::hasTable('audio_chunks')) {
-                DB::table('audio_chunks')->update([
+                AudioChunk::query()->update([
                     'translated_text' => null,
                     'transcription_timestamps' => null,
                     'updated_at' => now(),
@@ -61,19 +63,18 @@ class TranscriptMemoryService
             ];
         }
 
-        $row = DB::table('audio_chunks')
-            ->selectRaw("
-                COUNT(CASE WHEN translated_text IS NOT NULL OR transcription_timestamps IS NOT NULL THEN 1 END) as records,
-                COALESCE(SUM(
-                    LENGTH(COALESCE(CAST(translated_text AS CHAR), '')) +
-                    LENGTH(COALESCE(CAST(transcription_timestamps AS CHAR), ''))
-                ), 0) as bytes
-            ")
-            ->first();
+        $rows = AudioChunk::query()->get(['translated_text', 'transcription_timestamps']);
+        $rowsWithTranscript = $rows->filter(fn (AudioChunk $row): bool => $row->translated_text !== null
+            || $row->transcription_timestamps !== null);
 
         return [
-            'bytes' => (int) ($row->bytes ?? 0),
-            'records' => (int) ($row->records ?? 0),
+            'bytes' => $rowsWithTranscript->sum(function (AudioChunk $row): int {
+                $timestamps = $row->transcription_timestamps;
+
+                return strlen((string) ($row->translated_text ?? ''))
+                    + strlen($timestamps === null ? '' : json_encode($timestamps));
+            }),
+            'records' => $rowsWithTranscript->count(),
         ];
     }
 
@@ -86,20 +87,17 @@ class TranscriptMemoryService
             ];
         }
 
-        $row = DB::table('clean_transcript_chunks')
-            ->selectRaw("
-                COUNT(*) as records,
-                COALESCE(SUM(
-                    LENGTH(COALESCE(CAST(raw_text AS CHAR), '')) +
-                    LENGTH(COALESCE(CAST(clean_text AS CHAR), '')) +
-                    LENGTH(COALESCE(CAST(clean_timestamps AS CHAR), ''))
-                ), 0) as bytes
-            ")
-            ->first();
+        $rows = CleanTranscriptChunk::query()->get(['raw_text', 'clean_text', 'clean_timestamps']);
 
         return [
-            'bytes' => (int) ($row->bytes ?? 0),
-            'records' => (int) ($row->records ?? 0),
+            'bytes' => $rows->sum(function (CleanTranscriptChunk $row): int {
+                $timestamps = $row->clean_timestamps;
+
+                return strlen((string) ($row->raw_text ?? ''))
+                    + strlen((string) ($row->clean_text ?? ''))
+                    + strlen($timestamps === null ? '' : json_encode($timestamps));
+            }),
+            'records' => $rows->count(),
         ];
     }
 

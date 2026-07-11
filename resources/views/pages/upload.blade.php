@@ -1,8 +1,3 @@
-@php
-    $languageOptions = app(\App\Services\AppSettingsService::class)->speechToTextLanguageOptions();
-    $whisperModels = app(\App\Services\OfflineWhisperModelService::class)->catalog();
-@endphp
-
 <x-app-layout title="Upload Audio | AI Transcriber" active-page="upload">
     <div data-workspace class="h-full min-h-0 overflow-hidden">
         <div data-workspace-grid class="grid h-full min-h-0 grid-rows-[1fr_auto] gap-3 lg:grid-cols-[1.35fr_0.65fr] lg:grid-rows-1">
@@ -128,13 +123,20 @@
 
                     <div class="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-2">
                         <div class="flex min-w-0 items-center gap-2 text-[0.72rem]">
-                            <p class="shrink-0 uppercase tracking-[0.18em] text-slate-400">Now</p>
-                            <p data-upload-status class="shrink-0 font-semibold text-white">Ready</p>
-                            <p data-upload-progress-label class="shrink-0 text-cyan-300">Process 0 out of 0</p>
+                            <p data-upload-status class="min-w-0 flex-1 truncate font-semibold text-white">Ready</p>
                             <p data-upload-progress-percent class="shrink-0 font-semibold text-white">0%</p>
                         </div>
                         <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800/80">
                             <div data-upload-progress class="h-full w-0 rounded-full bg-gradient-to-r from-cyan-400 via-emerald-300 to-amber-300 transition-[width] duration-150"></div>
+                        </div>
+                        <div data-upload-sherpa-progress class="mt-2 hidden border-t border-white/10 pt-2">
+                            <div class="flex min-w-0 items-center gap-2 text-[0.68rem]">
+                                <p data-upload-sherpa-status class="min-w-0 flex-1 truncate font-semibold text-slate-200">Waiting</p>
+                                <p data-upload-sherpa-percent class="shrink-0 font-semibold text-cyan-200">0%</p>
+                            </div>
+                            <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-slate-800/80">
+                                <div data-upload-sherpa-bar class="h-full w-0 rounded-full bg-cyan-300 transition-[width] duration-300"></div>
+                            </div>
                         </div>
                         <div class="mt-1.5 flex flex-nowrap items-center gap-1">
                             <button type="button" data-upload-queue class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg bg-cyan-300 px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300">

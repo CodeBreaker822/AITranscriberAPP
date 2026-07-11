@@ -3,10 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\TranscriptPolisherException;
+use App\Models\AudioChunk;
+use App\Models\CleanTranscriptChunk;
 use App\Services\TranscriptPolisherService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class TranscriptFurnishController extends Controller
@@ -122,7 +123,7 @@ class TranscriptFurnishController extends Controller
 
     private function rawChunkQuery(int $userId, string $categoryName)
     {
-        return DB::table('audio_chunks')
+        return AudioChunk::query()
             ->select([
                 'id',
                 'user_id',
@@ -184,7 +185,7 @@ class TranscriptFurnishController extends Controller
                 continue;
             }
 
-            DB::table('clean_transcript_chunks')->updateOrInsert(
+            CleanTranscriptChunk::query()->updateOrCreate(
                 ['audio_chunk_id' => $chunk->id],
                 [
                     'user_id' => $userId,
@@ -193,15 +194,13 @@ class TranscriptFurnishController extends Controller
                     'clip_start_ms' => (int) $chunk->clip_start_ms,
                     'clip_end_ms' => (int) $chunk->clip_end_ms,
                     'range_label' => $chunk->range_label,
-                        'raw_text' => $chunk->translated_text,
-                        'clean_text' => $cleanedChunk['text'],
-                        'clean_timestamps' => json_encode($cleanedChunk['timestamps']),
-                        'provider' => $result['provider'] ?? null,
-                        'model' => $result['model'] ?? null,
-                        'instruction_hash' => $instructionHash,
-                        'status' => 'cleaned',
-                        'updated_at' => now(),
-                        'created_at' => now(),
+                    'raw_text' => $chunk->translated_text,
+                    'clean_text' => $cleanedChunk['text'],
+                    'clean_timestamps' => $cleanedChunk['timestamps'],
+                    'provider' => $result['provider'] ?? null,
+                    'model' => $result['model'] ?? null,
+                    'instruction_hash' => $instructionHash,
+                    'status' => 'cleaned',
                 ],
             );
 
@@ -224,7 +223,7 @@ class TranscriptFurnishController extends Controller
             return;
         }
 
-        DB::table('clean_transcript_chunks')
+        CleanTranscriptChunk::query()
             ->whereIn('audio_chunk_id', $ids)
             ->delete();
     }
@@ -282,8 +281,12 @@ class TranscriptFurnishController extends Controller
         return false;
     }
 
-    private function decodeTimestamps(?string $timestamps): array
+    private function decodeTimestamps(mixed $timestamps): array
     {
+        if (is_array($timestamps)) {
+            return $timestamps;
+        }
+
         if (! $timestamps) {
             return [];
         }

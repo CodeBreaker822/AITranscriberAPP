@@ -1,24 +1,21 @@
 <?php
 
+use App\Http\Controllers\AppUpdateController;
 use App\Http\Controllers\AudioChunkController;
 use App\Http\Controllers\AudioMemoryController;
 use App\Http\Controllers\AudioVadLogController;
-use App\Http\Controllers\AppUpdateController;
 use App\Http\Controllers\OfflineWhisperModelController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TranscriptFurnishController;
 use App\Http\Controllers\TranscriptMemoryController;
 use App\Http\Controllers\TranscriptSummaryController;
+use App\Http\Controllers\TranscriptionPageController;
 use App\Http\Controllers\UploadedAudioTranscriptionController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', function () {
-    return view('welcome');
-})->name('transcription.live');
+Route::get('/', [TranscriptionPageController::class, 'live'])->name('transcription.live');
 
-Route::get('/upload', function () {
-    return view('pages.upload');
-})->name('transcription.upload');
+Route::get('/upload', [TranscriptionPageController::class, 'upload'])->name('transcription.upload');
 
 Route::get('/settings', [SettingsController::class, 'edit'])->name('settings.edit');
 Route::post('/settings', [SettingsController::class, 'update'])->name('settings.update');
@@ -42,6 +39,8 @@ Route::get('/audio-vad-logs', [AudioVadLogController::class, 'index'])->name('au
 Route::post('/audio-uploads', [UploadedAudioTranscriptionController::class, 'store'])->name('audio-uploads.store');
 Route::post('/audio-uploads/sections/prepare', [AudioChunkController::class, 'prepareUploadedSection'])->name('audio-uploads.sections.prepare');
 Route::post('/audio-uploads/sections/prepare-batch', [AudioChunkController::class, 'prepareUploadedSectionsBatch'])->name('audio-uploads.sections.prepare-batch');
+Route::post('/audio-uploads/sections/diarize', [AudioChunkController::class, 'queueUploadedDiarization'])->name('audio-uploads.sections.diarize');
+Route::get('/audio-uploads/sessions/status', [AudioChunkController::class, 'uploadSessionStatus'])->name('audio-uploads.sessions.status');
 Route::post('/transcripts/furnish', [TranscriptFurnishController::class, 'store'])->name('transcripts.furnish');
 Route::get('/transcripts/summary', [TranscriptSummaryController::class, 'show'])->name('transcripts.summary.show');
 Route::post('/transcripts/summary', [TranscriptSummaryController::class, 'store'])->name('transcripts.summary.store');

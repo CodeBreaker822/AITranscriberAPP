@@ -3,13 +3,6 @@
     'activePage' => 'live',
 ])
 
-@php
-    $resourceProfile = app(\App\Services\AppSettingsService::class)->resourceProfile();
-    $hasOfflineTranscriptionModel = app(\App\Services\OfflineWhisperModelService::class)->hasSupportedInstalledModel();
-    $transcribeMaxBatchDurationMs = app(\App\Services\AppSettingsService::class)->transcribeMaxBatchDurationMs() ?? 1200000;
-    $transcribeMaxBatchClips = app(\App\Services\AppSettingsService::class)->transcribeMaxBatchClips() ?? 20;
-@endphp
-
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}" data-ui-page="{{ $activePage }}">
     <head>
@@ -32,7 +25,7 @@
     <body
         data-page="{{ $activePage }}"
         data-desktop-dev="{{ config('app.desktop_dev') ? 'true' : 'false' }}"
-        data-speech-provider="{{ app(\App\Services\AppSettingsService::class)->speechToTextProvider() }}"
+        data-speech-provider="{{ $speechProvider }}"
         data-update-connectivity-url="{{ route('app-update.connectivity') }}"
         data-update-status-url="{{ route('app-update.status') }}"
         data-update-download-url="{{ route('app-update.download') }}"
@@ -58,6 +51,8 @@
             data-upload-audio-url="{{ route('audio-uploads.store') }}"
             data-upload-audio-prepare-url="{{ route('audio-uploads.sections.prepare') }}"
             data-upload-audio-prepare-batch-url="{{ route('audio-uploads.sections.prepare-batch') }}"
+            data-upload-audio-diarize-url="{{ route('audio-uploads.sections.diarize') }}"
+            data-upload-session-status-url="{{ route('audio-uploads.sessions.status') }}"
             data-audio-chunk-url="{{ route('audio-chunks.store') }}"
             data-audio-chunk-batch-url="{{ route('audio-chunks.store-batch') }}"
             data-transcribe-max-batch-duration-ms="{{ $transcribeMaxBatchDurationMs }}"

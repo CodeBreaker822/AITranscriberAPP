@@ -6,6 +6,17 @@ use PHPUnit\Framework\TestCase;
 
 class TauriBuildCacheConfigurationTest extends TestCase
 {
+    public function test_nsis_reinstall_silently_skips_files_that_remain_locked(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $windowsConfig = file_get_contents($root.'/src-tauri/tauri.windows.conf.json');
+        $hooks = file_get_contents($root.'/src-tauri/nsis/installer-hooks.nsh');
+
+        $this->assertStringContainsString('"installerHooks": "nsis/installer-hooks.nsh"', $windowsConfig);
+        $this->assertStringContainsString('!macro NSIS_HOOK_PREINSTALL', $hooks);
+        $this->assertStringContainsString('SetOverwrite try', $hooks);
+    }
+
     public function test_cargo_profiles_avoid_large_development_artifacts(): void
     {
         $manifest = file_get_contents(dirname(__DIR__, 2).'/src-tauri/Cargo.toml');

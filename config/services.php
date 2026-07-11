@@ -28,7 +28,7 @@ return [
 
     'transcription_api' => [
         'base_url' => env('TRANSCRIPTION_API_BASE_URL', 'https://dilgaims.site/api'),
-        'timeout' => env('TRANSCRIPTION_API_TIMEOUT', 120),
+        'timeout' => env('TRANSCRIPTION_API_TIMEOUT', 1800),
     ],
 
     'silero_vad' => [

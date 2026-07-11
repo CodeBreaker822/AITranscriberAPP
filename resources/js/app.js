@@ -55,6 +55,24 @@ $(function () {
         || `speaker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const createTranscriptionProgressId = () => window.crypto?.randomUUID?.()
         || `progress-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const clampProgressPercent = (value) => Math.max(0, Math.min(100, Number(value || 0)));
+    const createPhaseProgress = (definitions) => Object.fromEntries(
+        definitions.map((phase) => [phase.key, 0]),
+    );
+    const phaseProgressAverage = (phases, definitions) => {
+        const keys = definitions.map((phase) => phase.key);
+
+        if (!keys.length) {
+            return 0;
+        }
+
+        const total = keys.reduce((sum, key) => sum + clampProgressPercent(phases?.[key]), 0);
+
+        return Math.round(total / keys.length);
+    };
+    const phaseProgressSummary = (phases, definitions) => definitions
+        .map((phase) => `${phase.label} ${Math.round(clampProgressPercent(phases?.[phase.key]))}%`)
+        .join(' | ');
     const whisperProgressHandlers = new Map();
     const registerWhisperProgress = (progressId, callback) => {
         if (progressId) {
@@ -320,6 +338,8 @@ $(function () {
         const uploadUrl = String($body.attr('data-upload-audio-url') || '');
         const uploadPrepareUrl = String($body.attr('data-upload-audio-prepare-url') || '');
         const uploadPrepareBatchUrl = String($body.attr('data-upload-audio-prepare-batch-url') || '');
+        const uploadDiarizeUrl = String($body.attr('data-upload-audio-diarize-url') || '');
+        const uploadSessionStatusUrl = String($body.attr('data-upload-session-status-url') || '');
         const audioChunkUrl = String($body.attr('data-audio-chunk-url') || '');
         const audioChunkBatchUrl = String($body.attr('data-audio-chunk-batch-url') || '');
         const maxTranscribeBatchDurationMs = Math.max(1, Number($body.attr('data-transcribe-max-batch-duration-ms') || 1200000) || 1200000);
@@ -346,8 +366,11 @@ $(function () {
         const $queueList = $('[data-upload-queue-list]');
         const $activeCount = $('[data-upload-active-count]');
         const $progress = $('[data-upload-progress]');
-        const $progressLabel = $('[data-upload-progress-label]');
         const $progressPercent = $('[data-upload-progress-percent]');
+        const $sherpaProgress = $('[data-upload-sherpa-progress]');
+        const $sherpaStatus = $('[data-upload-sherpa-status]');
+        const $sherpaPercent = $('[data-upload-sherpa-percent]');
+        const $sherpaBar = $('[data-upload-sherpa-bar]');
         const $transcriptCategory = $('[data-upload-transcript-category]');
         const $transcriptBadge = $('[data-upload-transcript-badge]');
         const $transcriptList = $('[data-upload-transcript-list]');
@@ -368,6 +391,7 @@ $(function () {
         let uploadInFlight = false;
         let currentSessionId = '';
         let currentCategoryName = '';
+        let activeBatchPositions = [];
         let cancelRequested = false;
         let pauseRequested = false;
         let sourceUploadXhr = null;
@@ -377,6 +401,10 @@ $(function () {
         let activeSectionProgress = 0;
         let activeSectionProgressTimer = null;
         let activeSectionProgressId = '';
+        let activeUploadPhaseProgress = null;
+        let activeUploadPhaseDefinitions = [];
+        let sherpaProgressActive = false;
+        let activeDiarizationMonitorGeneration = 0;
         let cleanedSections = [];
         let furnishInFlight = false;
         let cleanerStatus = 'Waiting';
@@ -498,8 +526,105 @@ $(function () {
 
         const hasUploadProgress = () => preparedSections.length > 0;
 
+        const uploadOnlinePhaseDefinitions = [
+            { key: 'prepare', label: 'Prepare' },
+            { key: 'silero', label: 'Silero' },
+            { key: 'transcribe', label: 'Whisper' },
+        ];
+        const uploadOfflinePhaseDefinitions = [
+            { key: 'prepare', label: 'Prepare' },
+            { key: 'silero', label: 'Silero' },
+            { key: 'transcribe', label: 'Server/Whisper' },
+            { key: 'sherpa', label: 'Diarization' },
+        ];
+        const uploadSherpaPhaseDefinitions = [
+            { key: 'sherpa', label: 'Diarization' },
+        ];
+        const getUploadPhaseDefinitions = () => getTranscriptionEngine() === 'offline'
+            ? uploadOfflinePhaseDefinitions
+            : uploadOnlinePhaseDefinitions;
+        const resetUploadPhaseProgress = () => {
+            activeUploadPhaseProgress = null;
+            activeUploadPhaseDefinitions = [];
+            $progressPercent.text('0%');
+            $progress.css('width', '0%');
+            $status.removeAttr('title');
+        };
+        const beginUploadPhaseProgress = (label = 'Processing') => {
+            activeUploadPhaseDefinitions = getUploadPhaseDefinitions();
+            activeUploadPhaseProgress = createPhaseProgress(activeUploadPhaseDefinitions);
+            $status.text(label);
+            $status.attr('title', phaseProgressSummary(activeUploadPhaseProgress, activeUploadPhaseDefinitions));
+            $progressPercent.text('0%');
+            $progress.css('width', '0%');
+        };
+        const renderUploadPhaseProgress = (label = '') => {
+            if (!activeUploadPhaseProgress || !activeUploadPhaseDefinitions.length) {
+                return false;
+            }
+
+            const percent = phaseProgressAverage(activeUploadPhaseProgress, activeUploadPhaseDefinitions);
+
+            $progressPercent.text(`${percent}%`);
+            $progress.css('width', `${percent}%`);
+            $status.attr('title', phaseProgressSummary(activeUploadPhaseProgress, activeUploadPhaseDefinitions));
+            if (label) {
+                $status.text(label);
+            }
+
+            return true;
+        };
+        const updateUploadPhaseProgress = (updates = {}, label = '') => {
+            if (!activeUploadPhaseProgress || !activeUploadPhaseDefinitions.length) {
+                beginUploadPhaseProgress(label || 'Processing');
+            }
+
+            activeUploadPhaseProgress = {
+                ...activeUploadPhaseProgress,
+                ...Object.fromEntries(Object.entries(updates).map(([key, value]) => [key, clampProgressPercent(value)])),
+            };
+
+            renderUploadPhaseProgress(label);
+        };
+        const markUploadPrepareProgress = (completed, total) => {
+            const percent = total > 0 ? Math.round((Math.max(0, completed) / total) * 100) : 100;
+
+            updateUploadPhaseProgress({
+                prepare: percent,
+                silero: percent,
+            }, `Preparing audio ${Math.max(0, completed)} of ${Math.max(0, total)}`);
+        };
+        const markUploadSherpaProgress = (percent, label = '') => {
+            updateUploadPhaseProgress({ sherpa: percent }, label);
+        };
+
+        const resetSherpaProgress = () => {
+            sherpaProgressActive = false;
+            $sherpaProgress.addClass('hidden');
+            $sherpaStatus.text('Waiting');
+            $sherpaPercent.text('0%');
+            $sherpaBar.css('width', '0%');
+        };
+
+        const renderSherpaProgress = (done, total, options = {}) => {
+            const safeTotal = Math.max(0, Number(total || 0));
+            const safeDone = Math.min(safeTotal, Math.max(0, Number(done || 0)));
+            const rawPercent = safeTotal > 0 ? Math.round((safeDone / safeTotal) * 100) : 0;
+            const percent = phaseProgressAverage({ sherpa: rawPercent }, uploadSherpaPhaseDefinitions);
+            const failed = Math.max(0, Number(options.failed || 0));
+            const status = options.status || (safeDone >= safeTotal ? 'Complete' : 'Diarization in progress');
+
+            sherpaProgressActive = safeTotal > 0 && percent < 100;
+            $sherpaProgress.toggleClass('hidden', safeTotal === 0);
+            $sherpaStatus.text(failed > 0
+                ? `${status} ${safeDone} / ${safeTotal}, ${failed} failed`
+                : `${status} ${safeDone} / ${safeTotal}`);
+            $sherpaPercent.text(`${percent}%`);
+            $sherpaBar.css('width', `${percent}%`);
+        };
+
         const resetUploadProgress = (status = 'Ready', options = {}) => {
-            const { keepCancelFlag = false } = options;
+            const { keepCancelFlag = false, keepSherpaProgress = false } = options;
 
             stopSectionProgress();
             preparedSections = [];
@@ -515,6 +640,17 @@ $(function () {
             }
 
             clearUploadState();
+            if (!keepSherpaProgress) {
+                activeDiarizationMonitorGeneration += 1;
+            }
+            if (!keepSherpaProgress) {
+                resetSherpaProgress();
+            }
+            resetUploadPhaseProgress();
+            if (status === 'Complete') {
+                $progressPercent.text('100%');
+                $progress.css('width', '100%');
+            }
             $status.text(status);
             renderQueue();
             syncUploadControls();
@@ -586,39 +722,103 @@ $(function () {
             ];
         };
 
-        const monitorQueuedDiarization = (audioChunkIds, attemptsRemaining = 450) => {
-            const pendingIds = [...new Set(audioChunkIds.map((id) => Number(id)).filter((id) => id > 0))];
+        const showQueuedDiarizationProgress = (queuedIds) => {
+            const uniqueIds = [...new Set(queuedIds.map((id) => Number(id)).filter((id) => id > 0))];
 
-            if (!storedUrl || !pendingIds.length || attemptsRemaining <= 0) {
+            if (!uniqueIds.length) {
+                return [];
+            }
+
+            renderSherpaProgress(0, uniqueIds.length, { status: 'Diarization in progress' });
+
+            return uniqueIds;
+        };
+
+        const monitorQueuedDiarization = (audioChunkIds, attemptsRemaining = 450, generation = activeDiarizationMonitorGeneration) => {
+            if (generation !== activeDiarizationMonitorGeneration) {
                 return;
             }
 
+            const pendingIds = [...new Set(audioChunkIds.map((id) => Number(id)).filter((id) => id > 0))];
+
+            if (!storedUrl || !pendingIds.length || attemptsRemaining <= 0) {
+                if (pendingIds.length && attemptsRemaining <= 0) {
+                    renderSherpaProgress(0, pendingIds.length, { status: 'Timed out' });
+                }
+                return;
+            }
+
+            if ($sherpaProgress.hasClass('hidden')) {
+                renderSherpaProgress(0, pendingIds.length, { status: 'Diarization in progress' });
+            }
+
             window.setTimeout(() => {
+                if (generation !== activeDiarizationMonitorGeneration) {
+                    return;
+                }
+
                 $.getJSON(storedUrl)
                     .done((response) => {
+                        if (generation !== activeDiarizationMonitorGeneration) {
+                            return;
+                        }
+
                         const items = Array.isArray(response?.data) ? response.data : [];
                         const rowsById = new Map(items.map((item) => [Number(item?.id || 0), item]));
                         const stillPending = [];
+                        let failed = 0;
 
                         pendingIds.forEach((id) => {
                             const row = rowsById.get(id);
+                            const status = String(row?.status || '');
 
-                            if (!row || row.status === 'diarization_queued') {
+                            if (!row || ['diarization_queued', 'diarization_processing', 'diarization_retrying', 'diarization_waiting_transcript'].includes(status)) {
                                 stillPending.push(id);
                                 return;
                             }
 
+                            if (status === 'diarization_failed') {
+                                failed += 1;
+                            }
                             rememberStoredUploadItem(row);
                         });
 
+                        renderSherpaProgress(
+                            pendingIds.length - stillPending.length,
+                            pendingIds.length,
+                            { failed, status: stillPending.length ? 'Diarization in progress' : 'Complete' },
+                        );
+
                         if (stillPending.length) {
-                            monitorQueuedDiarization(stillPending, attemptsRemaining - 1);
+                            monitorQueuedDiarization(pendingIds, attemptsRemaining - 1, generation);
                         } else {
                             renderTranscript();
                         }
                     })
-                    .fail(() => monitorQueuedDiarization(pendingIds, attemptsRemaining - 1));
+                    .fail(() => {
+                        if (generation !== activeDiarizationMonitorGeneration) {
+                            return;
+                        }
+
+                        renderSherpaProgress(
+                            0,
+                            pendingIds.length,
+                            { status: 'Diarization in progress' },
+                        );
+                        monitorQueuedDiarization(pendingIds, attemptsRemaining - 1, generation);
+                    });
             }, 2000);
+        };
+
+        const restartQueuedDiarizationMonitor = (queuedIds) => {
+            const uniqueIds = showQueuedDiarizationProgress(queuedIds);
+
+            if (!uniqueIds.length || !storedUrl) {
+                return;
+            }
+
+            activeDiarizationMonitorGeneration += 1;
+            monitorQueuedDiarization(uniqueIds, 450, activeDiarizationMonitorGeneration);
         };
 
         const syncUploadCategoriesFromStoredItems = () => {
@@ -796,10 +996,37 @@ $(function () {
                     : complete === total
                         ? 100
                         : 0;
+            const activeUnits = activeBatchPositions.length > 0
+                ? activeBatchPositions.length
+                : (activeSectionPosition > 0 ? 1 : 0);
+            const transcribePercent = total === 0
+                ? 0
+                : Math.round(((complete + (activeUnits * (percent / 100))) / total) * 100);
+            const progressIndex = activeBatchPositions.length > 0
+                ? Math.min(
+                    activeBatchPositions.length - 1,
+                    Math.floor((Math.max(0, percent) / 100) * activeBatchPositions.length),
+                )
+                : -1;
+            const activeLabel = progressIndex >= 0
+                ? `Processing ${activeBatchPositions[progressIndex]} of ${total}`
+                : '';
 
-            $progressLabel.text(`Process ${position || 0} out of ${total}`);
+            if (activeUploadPhaseProgress) {
+                activeUploadPhaseProgress = {
+                    ...activeUploadPhaseProgress,
+                    transcribe: clampProgressPercent(transcribePercent),
+                };
+                renderUploadPhaseProgress(activeLabel);
+                return;
+            }
+
             $progressPercent.text(`${percent}%`);
             $progress.css('width', `${percent}%`);
+
+            if (activeBatchPositions.length > 0) {
+                $status.text(activeLabel);
+            }
         };
 
         const stopSectionProgress = () => {
@@ -813,6 +1040,7 @@ $(function () {
 
             activeSectionPosition = 0;
             activeSectionProgress = 0;
+            activeBatchPositions = [];
         };
 
         const beginSectionProgress = (position, progressId = '', offline = false) => {
@@ -830,7 +1058,7 @@ $(function () {
                         activeSectionProgressTimer = null;
                     }
 
-                    activeSectionProgress = Math.round(10 + (whisperPercent * 0.8));
+                    activeSectionProgress = Math.round(whisperPercent);
                     $status.text(whisperPercent >= 100
                         ? 'Separating speakers'
                         : `Whisper ${Math.round(whisperPercent)}%`);
@@ -1322,6 +1550,9 @@ $(function () {
 
         const setProcessingState = (isProcessing) => {
             uploadInFlight = isProcessing;
+            if (isProcessing) {
+                resetSherpaProgress();
+            }
             $status.text(isProcessing ? 'Processing' : selectedFile ? 'Ready' : 'Ready');
             syncUploadControls();
         };
@@ -1385,7 +1616,8 @@ $(function () {
             let completed = 0;
             let failed = false;
             const concurrency = getUploadPrepareConcurrency();
-            $status.text(`Preparing audio 0 of ${total}`);
+            beginUploadPhaseProgress(`Preparing audio 0 of ${total}`);
+            markUploadPrepareProgress(0, total);
 
             if (uploadPrepareBatchUrl) {
                 candidates.forEach(({ index }) => {
@@ -1412,6 +1644,7 @@ $(function () {
                                 user_id: defaultUserId,
                                 category_name: categoryName,
                                 concurrency: batch.length,
+                                speaker_session_id: getTranscriptionEngine() === 'online' ? sessionId : '',
                                 sections: batch.map(({ section }) => ({
                                     clip_index: section.index,
                                     clip_start_ms: section.startMs,
@@ -1435,6 +1668,7 @@ $(function () {
                             rows.forEach((data, rowIndex) => {
                                 const { index } = batch[rowIndex];
                                 const skipped = Boolean(data.skipped || data.prepared_skipped);
+                                const audioChunkId = Number(data.audio_chunk_id || 0);
                                 completed += 1;
                                 preparedSections[index] = {
                                     ...preparedSections[index],
@@ -1443,6 +1677,7 @@ $(function () {
                                     sourceName: data.source_name || '',
                                     preparedName: data.prepared_name || '',
                                     preparedSkipped: skipped,
+                                    audioChunkId: audioChunkId > 0 ? audioChunkId : null,
                                     status: 'Ready',
                                     preparedMeta: skipped
                                         ? 'No speech detected'
@@ -1450,7 +1685,7 @@ $(function () {
                                 };
                             });
 
-                            $status.text(`Preparing audio ${completed} of ${total}`);
+                            markUploadPrepareProgress(completed, total);
                             renderQueue();
                         } finally {
                             activePrepareXhrs = activePrepareXhrs.filter((item) => item !== xhr);
@@ -1493,7 +1728,9 @@ $(function () {
                     const xhr = $.ajax({
                         url: uploadPrepareUrl,
                         method: 'POST',
-                        data: buildUploadSectionFormData(sessionId, categoryName, section),
+                        data: buildUploadSectionFormData(sessionId, categoryName, section, {
+                            speaker_session_id: getTranscriptionEngine() === 'online' ? sessionId : '',
+                        }),
                         processData: false,
                         contentType: false,
                     });
@@ -1503,6 +1740,7 @@ $(function () {
                         const response = await xhr;
                         const data = response?.data || {};
                         const skipped = Boolean(data.skipped || data.prepared_skipped);
+                        const audioChunkId = Number(data.audio_chunk_id || 0);
                         completed += 1;
                         preparedSections[index] = {
                             ...preparedSections[index],
@@ -1511,12 +1749,13 @@ $(function () {
                             sourceName: data.source_name || '',
                             preparedName: data.prepared_name || '',
                             preparedSkipped: skipped,
+                            audioChunkId: audioChunkId > 0 ? audioChunkId : null,
                             status: 'Ready',
                             preparedMeta: skipped
                                 ? 'No speech detected'
                                 : `${formatBytes(Number(data.prepared_file_size_bytes || 0))} prepared`,
                         };
-                        $status.text(`Preparing audio ${completed} of ${total}`);
+                        markUploadPrepareProgress(completed, total);
                         renderQueue();
                     } catch (xhr) {
                         if (cancelRequested || xhr?.statusText === 'abort') {
@@ -1544,10 +1783,68 @@ $(function () {
             return !failed && !cancelRequested;
         };
 
+        const startPreparedUploadDiarization = async (sessionId) => {
+            if (getTranscriptionEngine() !== 'online' || !uploadDiarizeUrl) {
+                return [];
+            }
+
+            const sections = preparedSections
+                .map((section) => ({
+                    audio_chunk_id: Number(section.audioChunkId || 0),
+                    prepared_name: section.preparedName || '',
+                    clip_index: section.index,
+                    clip_start_ms: section.startMs,
+                    clip_end_ms: section.endMs,
+                    duration_ms: section.durationMs || Math.max(1, section.endMs - section.startMs),
+                    range_label: section.rangeLabel,
+                }))
+                .filter((section) => section.prepared_name);
+
+            if (!sections.length) {
+                return [];
+            }
+
+            const response = await $.ajax({
+                url: uploadDiarizeUrl,
+                method: 'POST',
+                data: JSON.stringify({
+                    upload_session_id: sessionId,
+                    speaker_session_id: sessionId,
+                    user_id: defaultUserId,
+                    category_name: getUploadCategory(),
+                    sections,
+                }),
+                contentType: 'application/json',
+            });
+            const queuedIds = Array.isArray(response?.data?.audio_chunk_ids)
+                ? response.data.audio_chunk_ids.map((id) => Number(id)).filter((id) => id > 0)
+                : [];
+            const queuedRows = Array.isArray(response?.data?.sections) ? response.data.sections : [];
+
+            if (queuedIds.length > 0) {
+                const queuedSet = new Set(queuedIds);
+                const queuedByClipIndex = new Map(queuedRows
+                    .map((row) => [Number(row?.clip_index || 0), Number(row?.audio_chunk_id || 0)])
+                    .filter(([, audioChunkId]) => audioChunkId > 0));
+                preparedSections = preparedSections.map((section) => {
+                    const audioChunkId = queuedByClipIndex.get(Number(section.index)) || Number(section.audioChunkId || 0);
+
+                    return audioChunkId > 0 && queuedSet.has(audioChunkId)
+                        ? { ...section, audioChunkId, diarizationQueued: true }
+                        : section;
+                });
+                restartQueuedDiarizationMonitor(queuedIds);
+            }
+
+            return queuedIds;
+        };
+
         const processUploadSections = async (sessionId, categoryName) => {
             cancelRequested = false;
             pauseRequested = false;
-            const queuedDiarizationIds = [];
+            const queuedDiarizationIds = preparedSections
+                .filter((section) => section.diarizationQueued && Number(section.audioChunkId || 0) > 0)
+                .map((section) => Number(section.audioChunkId));
 
             if (!audioChunkUrl) {
                 preparedSections = preparedSections.map((section) => ({
@@ -1562,6 +1859,14 @@ $(function () {
                 return;
             }
 
+            if (!activeUploadPhaseProgress) {
+                beginUploadPhaseProgress('Processing');
+            }
+            updateUploadPhaseProgress({
+                prepare: 100,
+                silero: 100,
+            }, 'Processing');
+
             const commonSectionPayload = (section) => ({
                 clip_index: section.index,
                 clip_start_ms: section.startMs,
@@ -1571,6 +1876,7 @@ $(function () {
                 source_name: section.sourceName || '',
                 prepared_name: section.preparedName || '',
                 prepared_skipped: section.preparedSkipped ? 1 : 0,
+                audio_chunk_id: section.audioChunkId || '',
             });
 
             const completeBatchRows = async (batch, rows) => {
@@ -1602,6 +1908,7 @@ $(function () {
                     };
                 });
 
+                restartQueuedDiarizationMonitor(queuedDiarizationIds);
                 rememberUploadCategory(categoryName);
                 activeSectionXhr = null;
                 renderQueue();
@@ -1663,13 +1970,14 @@ $(function () {
                         preparedSections[sectionIndex].status = 'Processing';
                     });
 
-                    const firstPosition = batch[0].index + 1;
-                    const lastPosition = batch[batch.length - 1].index + 1;
-                    $status.text(firstPosition === lastPosition
-                        ? `Processing ${firstPosition} of ${preparedSections.length}`
-                        : `Processing ${firstPosition}-${lastPosition} of ${preparedSections.length}`);
+                    const positions = batch.map(({ index: sectionIndex }) => sectionIndex + 1);
+                    const firstPosition = positions[0];
+                    const lastPosition = positions[positions.length - 1];
+                    $status.text(`Processing ${firstPosition} of ${preparedSections.length}`);
 
                     beginSectionProgress(firstPosition, '', false);
+                    activeBatchPositions = positions;
+                    renderSectionProgress();
                     renderQueue();
 
                     try {
@@ -1742,6 +2050,7 @@ $(function () {
                 formData.append('source_name', section.sourceName || '');
                 formData.append('prepared_name', section.preparedName || '');
                 formData.append('prepared_skipped', section.preparedSkipped ? '1' : '0');
+                formData.append('audio_chunk_id', section.audioChunkId || '');
                 if (progressId) {
                     formData.append('progress_id', progressId);
                 }
@@ -1777,6 +2086,18 @@ $(function () {
                             ? `${formatBytes(Number(chunk.prepared_file_size_bytes))} sent`
                             : '',
                     };
+                    if (getTranscriptionEngine() === 'offline') {
+                        const completedSections = preparedSections.filter((item) => item.status === 'Complete').length;
+                        markUploadSherpaProgress(
+                            preparedSections.length > 0
+                                ? Math.round((completedSections / preparedSections.length) * 100)
+                                : 100,
+                            `Processing ${Math.min(index + 1, preparedSections.length)} of ${preparedSections.length}`,
+                        );
+                    } else if (chunk.status === 'diarization_queued' && Number(chunk.id || 0) > 0) {
+                        queuedDiarizationIds.push(Number(chunk.id));
+                        restartQueuedDiarizationMonitor(queuedDiarizationIds);
+                    }
                     activeSectionXhr = null;
                     renderQueue();
                     renderTranscript();
@@ -1813,10 +2134,12 @@ $(function () {
             uploadInFlight = false;
             syncUploadControls();
             if (!cancelRequested && !pausedWithWorkRemaining) {
-                monitorQueuedDiarization(queuedDiarizationIds);
+                restartQueuedDiarizationMonitor(queuedDiarizationIds);
                 rememberUploadCategory(categoryName);
                 loadUploadCategories();
-                resetUploadProgress('Complete');
+                resetUploadProgress('Complete', {
+                    keepSherpaProgress: queuedDiarizationIds.length > 0,
+                });
                 notify('Audio transcription completed.');
             }
         };
@@ -2113,6 +2436,14 @@ $(function () {
                 const prepared = await prepareUploadSections(sessionId, categoryName);
 
                 if (prepared && !pauseRequested) {
+                    try {
+                        await startPreparedUploadDiarization(sessionId);
+                    } catch (xhr) {
+                        if (cancelRequested || xhr?.statusText === 'abort') {
+                            resetUploadProgress();
+                            return;
+                        }
+                    }
                     await processUploadSections(sessionId, categoryName);
                 } else if (pauseRequested) {
                     $status.text('Paused');
@@ -2247,28 +2578,43 @@ $(function () {
                     return;
                 }
 
-                currentSessionId = String(stored.sessionId);
-                currentCategoryName = String(stored.categoryName || '');
-                selectedDurationMs = Number(stored.durationMs || 0);
-                preparedSections = stored.sections.map((section) => ({
-                    ...section,
-                    status: section.status === 'Processing' ? 'Cancelled' : section.status,
-                    preparedMeta: section.status === 'Processing' ? 'Ready to continue' : section.preparedMeta,
-                }));
-
-                if (!hasUnfinishedSections()) {
-                    resetUploadProgress();
+                if (!uploadSessionStatusUrl) {
+                    clearUploadState();
                     return;
                 }
 
-                if (currentCategoryName && !$categoryInput.val()) {
-                    $categoryInput.val(currentCategoryName);
-                }
-                syncPlan();
-                syncTranscriptCategory();
-                $status.text('Ready to continue');
-                renderQueue();
+                $.getJSON(uploadSessionStatusUrl, { session_id: String(stored.sessionId) })
+                    .done((response) => {
+                        if (response?.available !== true) {
+                            resetUploadProgress('Ready');
+                            return;
+                        }
+
+                        currentSessionId = String(stored.sessionId);
+                        currentCategoryName = String(stored.categoryName || '');
+                        selectedDurationMs = Number(stored.durationMs || 0);
+                        preparedSections = stored.sections.map((section) => ({
+                            ...section,
+                            status: section.status === 'Processing' ? 'Cancelled' : section.status,
+                            preparedMeta: section.status === 'Processing' ? 'Ready to continue' : section.preparedMeta,
+                        }));
+
+                        if (!hasUnfinishedSections()) {
+                            resetUploadProgress();
+                            return;
+                        }
+
+                        if (currentCategoryName && !$categoryInput.val()) {
+                            $categoryInput.val(currentCategoryName);
+                        }
+                        syncPlan();
+                        syncTranscriptCategory();
+                        $status.text('Ready to continue');
+                        renderQueue();
+                    })
+                    .fail(() => resetUploadProgress('Ready'));
             } catch (error) {
+                clearUploadState();
             }
         };
 
@@ -2446,6 +2792,8 @@ $(function () {
     let activeUploadXhr = null;
     let activeUploadItemId = null;
     let activeWhisperProgressId = '';
+    let activeLivePhaseProgress = null;
+    let activeLivePhaseTimer = null;
     let cancelUploadByUser = false;
     let uploadPaused = false;
     let liveCleanerStatus = 'Waiting';
@@ -3086,24 +3434,115 @@ $(function () {
         $row.find('[data-item-progress-label]').text(`${formatClock(currentMs)} / ${formatClock(safeDuration)}`);
     };
 
-    const updateQueueItemTranscriptionProgress = (itemId, whisperPercent) => {
-        const $row = $queue.find(`[data-queue-item="${itemId}"]`);
-        if (!$row.length) {
+    const getLivePhaseDefinitions = (transcribeLabel = 'Server') => [
+        { key: 'prepare', label: 'Prepare' },
+        { key: 'silero', label: 'Silero' },
+        { key: 'transcribe', label: transcribeLabel },
+        { key: 'sherpa', label: 'Sherpa' },
+    ];
+
+    const livePhaseAverage = (phases, transcribeLabel = 'Server') => phaseProgressAverage(
+        phases,
+        getLivePhaseDefinitions(transcribeLabel),
+    );
+
+    const livePhaseSummary = (phases, transcribeLabel = 'Server') => phaseProgressSummary(
+        phases,
+        getLivePhaseDefinitions(transcribeLabel),
+    );
+
+    const updateLivePhaseProgress = (itemId, updates = {}, activeLabel = '') => {
+        const item = queuedItems.find((entry) => entry.id === itemId);
+        if (!item) {
             return;
         }
 
-        const complete = whisperPercent >= 100;
-        const overallPercent = Math.round(10 + (whisperPercent * 0.8));
-        const label = complete ? 'Separating speakers' : `Whisper ${Math.round(whisperPercent)}%`;
-        $row.find('[data-item-progress]').css('width', `${overallPercent}%`);
-        $row.find('[data-item-progress-label]').text(label);
-        $row.find('[data-upload-state]').text(complete ? 'Speakers' : `Whisper ${Math.round(whisperPercent)}%`);
+        item.phaseProgress = {
+            prepare: 0,
+            silero: 0,
+            transcribe: 0,
+            sherpa: 0,
+            ...(item.phaseProgress || {}),
+            ...updates,
+        };
+        activeLivePhaseProgress = item.phaseProgress;
+
+        const transcribeLabel = item.transcriptionEngine === 'offline' ? 'Whisper' : 'Server';
+        const percent = livePhaseAverage(item.phaseProgress);
+        const summary = livePhaseSummary(item.phaseProgress, transcribeLabel);
+        const label = activeLabel || summary;
+        const $row = $queue.find(`[data-queue-item="${itemId}"]`);
+
+        if ($row.length) {
+            $row.find('[data-item-progress]').css('width', `${percent}%`);
+            $row.find('[data-item-progress-label]').text(summary);
+            $row.find('[data-upload-state]').text(`${percent}%`);
+        }
+
         if (!isRecording) {
             $activeName.text('Processing');
-            $progress.css('width', `${overallPercent}%`);
-            $progressLabel.text(label);
+            $activeNote.text(summary);
+            $progress.css('width', `${percent}%`);
+            $progressLabel.text(`${percent}%`);
         }
-        setSupportMessage(isRecording ? `Live · ${label}` : label);
+        setSupportMessage(isRecording ? `Live - ${label}` : label);
+    };
+
+    const stopLivePhaseTimer = () => {
+        if (activeLivePhaseTimer) {
+            window.clearInterval(activeLivePhaseTimer);
+            activeLivePhaseTimer = null;
+        }
+    };
+
+    const startLivePhaseTimer = (item) => {
+        stopLivePhaseTimer();
+        activeLivePhaseProgress = item.phaseProgress || {
+            prepare: 0,
+            silero: 0,
+            transcribe: 0,
+            sherpa: 0,
+        };
+        item.phaseProgress = activeLivePhaseProgress;
+
+        activeLivePhaseTimer = window.setInterval(() => {
+            if (activeUploadItemId !== item.id || !uploadInFlight) {
+                stopLivePhaseTimer();
+                return;
+            }
+
+            const next = { ...(item.phaseProgress || {}) };
+            let label = '';
+
+            if ((next.prepare || 0) < 95) {
+                next.prepare = Math.min(95, Number(next.prepare || 0) + 8);
+                label = 'Prepare';
+            } else if ((next.silero || 0) < 95) {
+                next.prepare = 100;
+                next.silero = Math.min(95, Number(next.silero || 0) + 5);
+                label = 'Silero';
+            } else if ((next.transcribe || 0) < 95) {
+                next.silero = 100;
+                next.transcribe = Math.min(95, Number(next.transcribe || 0) + (item.transcriptionEngine === 'offline' ? 1 : 3));
+                label = item.transcriptionEngine === 'offline' ? 'Whisper' : 'Server';
+            } else if ((next.sherpa || 0) < 90) {
+                next.transcribe = 100;
+                next.sherpa = Math.min(90, Number(next.sherpa || 0) + 2);
+                label = 'Sherpa';
+            } else {
+                label = 'Sherpa';
+            }
+
+            updateLivePhaseProgress(item.id, next, `${label} ${livePhaseAverage(next)}%`);
+        }, 450);
+    };
+
+    const updateQueueItemTranscriptionProgress = (itemId, whisperPercent) => {
+        updateLivePhaseProgress(itemId, {
+            prepare: 100,
+            silero: 100,
+            transcribe: Math.max(0, Math.min(100, Number(whisperPercent || 0))),
+        }, `Whisper ${Math.round(whisperPercent)}%`);
     };
 
     const setQueueItemPlaybackState = (itemId, playing) => {
@@ -3290,15 +3729,24 @@ $(function () {
 
         uploadInFlight = true;
         activeUploadItemId = nextItem.id;
+        const transcriptionEngine = getTranscriptionEngine();
+        nextItem.transcriptionEngine = transcriptionEngine;
+        nextItem.phaseProgress = {
+            prepare: 0,
+            silero: 0,
+            transcribe: 0,
+            sherpa: 0,
+        };
         setQueueItemUploadState(nextItem.id, 'sending');
         setSupportMessage('Sending');
         syncLiveControls();
+        updateLivePhaseProgress(nextItem.id, nextItem.phaseProgress, 'Prepare 0%');
+        startLivePhaseTimer(nextItem);
 
-        const offline = getTranscriptionEngine() === 'offline';
+        const offline = transcriptionEngine === 'offline';
         const progressId = offline ? createTranscriptionProgressId() : '';
         activeWhisperProgressId = progressId;
         if (progressId) {
-            updateQueueItemTranscriptionProgress(nextItem.id, 0);
             registerWhisperProgress(progressId, (percent) => {
                 updateQueueItemTranscriptionProgress(nextItem.id, percent);
             });
@@ -3314,7 +3762,7 @@ $(function () {
         formData.append('range_label', nextItem.rangeLabel);
         formData.append('duration_ms', String(nextItem.durationMs));
         formData.append('language_code', nextItem.languageCode || getLanguageCode());
-        formData.append('transcription_engine', getTranscriptionEngine());
+        formData.append('transcription_engine', transcriptionEngine);
         formData.append('whisper_model', getWhisperModel());
         formData.append('speaker_session_id', nextItem.speakerSessionId || '');
         formData.append('finalize_session', nextItem.finalizeSession ? '1' : '0');
@@ -3328,8 +3776,35 @@ $(function () {
             data: formData,
             processData: false,
             contentType: false,
+            xhr: () => {
+                const xhr = $.ajaxSettings.xhr();
+
+                if (xhr.upload) {
+                    xhr.upload.addEventListener('progress', (event) => {
+                        if (!event.lengthComputable) {
+                            return;
+                        }
+
+                        const percent = Math.max(0, Math.min(100, (event.loaded / event.total) * 100));
+                        updateLivePhaseProgress(nextItem.id, {
+                            prepare: percent,
+                        }, `Prepare ${Math.round(livePhaseAverage({
+                            ...(nextItem.phaseProgress || {}),
+                            prepare: percent,
+                        }))}%`);
+                    });
+                }
+
+                return xhr;
+            },
             success: (response) => {
                 const responseData = response?.data || {};
+                updateLivePhaseProgress(nextItem.id, {
+                    prepare: 100,
+                    silero: 100,
+                    transcribe: 100,
+                    sherpa: 100,
+                }, 'Complete 100%');
                 rememberLiveTimelineCursor(
                     nextItem.categoryName || activeCategoryName || getCategoryName(),
                     Number(responseData.clip_end_ms || nextItem.clipEndMs || 0),
@@ -3353,8 +3828,10 @@ $(function () {
                 syncLiveControls();
             },
             complete: () => {
+                stopLivePhaseTimer();
                 clearWhisperProgress(activeWhisperProgressId);
                 activeWhisperProgressId = '';
+                activeLivePhaseProgress = null;
                 uploadInFlight = false;
                 activeUploadXhr = null;
                 activeUploadItemId = null;
@@ -3382,6 +3859,7 @@ $(function () {
 
         if (!skipAbort && activeUploadItemId === id && activeUploadXhr) {
             cancelUploadByUser = true;
+            stopLivePhaseTimer();
             cancelWhisperProgress(activeWhisperProgressId);
             activeUploadXhr.abort();
         }
@@ -3419,6 +3897,7 @@ $(function () {
 
         if (activeUploadXhr) {
             cancelUploadByUser = true;
+            stopLivePhaseTimer();
             cancelWhisperProgress(activeWhisperProgressId);
             activeUploadXhr.abort();
         }
@@ -3438,6 +3917,7 @@ $(function () {
         activeSpeakerSessionId = '';
         uploadInFlight = false;
         activeUploadItemId = null;
+        activeLivePhaseProgress = null;
         uploadPaused = hasLiveRetryableClips();
         setSupportMessage(uploadPaused ? 'Saving paused' : (isRecording ? 'Live' : 'Ready'));
         renderQueue();

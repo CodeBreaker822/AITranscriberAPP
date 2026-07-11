@@ -115,6 +115,7 @@ class HostedTranscriptionApiService
                     'clip_index' => $options['clip_index'] ?? null,
                     'clip_start_ms' => $options['clip_start_ms'] ?? null,
                     'clip_end_ms' => $options['clip_end_ms'] ?? null,
+                    'response_mode' => 'async',
                 ]);
         } catch (ConnectionException $exception) {
             $this->http->logConnectionFailure(
@@ -144,7 +145,7 @@ class HostedTranscriptionApiService
             throw new SpeechToTextException(ServiceUserMessage::transcriptionFailed('Transcription server'), $response->status());
         }
 
-        $payload = $response->json() ?? [];
+        $payload = $this->resolveAsyncTranscriptionPayload($response->json() ?? []);
 
         return [
             'text' => (string) ($payload['text'] ?? ''),
@@ -194,6 +195,7 @@ class HostedTranscriptionApiService
                 'clip_index' => array_map(fn (array $clip): mixed => $clip['clip_index'] ?? null, $clips),
                 'clip_start_ms' => array_map(fn (array $clip): mixed => $clip['clip_start_ms'] ?? null, $clips),
                 'clip_end_ms' => array_map(fn (array $clip): mixed => $clip['clip_end_ms'] ?? null, $clips),
+                'response_mode' => 'async',
             ]);
         } catch (ConnectionException $exception) {
             $this->http->logConnectionFailure(
@@ -228,7 +230,7 @@ class HostedTranscriptionApiService
             throw new SpeechToTextException($message, $response->status());
         }
 
-        $payload = $response->json() ?? [];
+        $payload = $this->resolveAsyncTranscriptionPayload($response->json() ?? []);
         $responseClips = is_array($payload['clips'] ?? null)
             ? array_values(array_filter($payload['clips'], 'is_array'))
             : [];
@@ -317,6 +319,74 @@ class HostedTranscriptionApiService
         if ($durationMs > $maxDurationMs) {
             throw new SpeechToTextException('Audio is too big.', 422);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function resolveAsyncTranscriptionPayload(array $payload): array
+    {
+        $jobId = trim((string) ($payload['job_id'] ?? ''));
+
+        if ($jobId === '') {
+            return $payload;
+        }
+
+        $deadline = microtime(true) + (int) config(
+            'services.transcription_api.async_timeout',
+            (int) config('services.transcription_api.timeout', 1800),
+        );
+        $statusUrl = $this->url('/transcribe/jobs/'.rawurlencode($jobId));
+
+        do {
+            try {
+                $response = $this->request()
+                    ->timeout(30)
+                    ->get($statusUrl);
+            } catch (ConnectionException $exception) {
+                $this->http->logConnectionFailure(
+                    'Hosted transcription job status connection failed.',
+                    $statusUrl,
+                    $exception,
+                    ['job_id' => $jobId],
+                );
+                throw new SpeechToTextException(ServiceUserMessage::cannotReachProvider('transcription server'), 0, $exception);
+            }
+
+            if ($response->failed()) {
+                Log::error('Hosted transcription job status request failed.', [
+                    'status' => $response->status(),
+                    'job_id' => $jobId,
+                    'response' => $response->json() ?? $response->body(),
+                ]);
+
+                throw new SpeechToTextException(
+                    $this->messageForResponse($response, ServiceUserMessage::transcriptionFailed('Transcription server')),
+                    $response->status(),
+                );
+            }
+
+            $jobPayload = $response->json() ?? [];
+            $status = strtolower((string) ($jobPayload['status'] ?? ''));
+
+            if (in_array($status, ['completed', 'complete', 'succeeded', 'success'], true)) {
+                $result = $jobPayload['result'] ?? $jobPayload['data'] ?? $jobPayload;
+
+                return is_array($result) ? $result : [];
+            }
+
+            if (in_array($status, ['failed', 'cancelled', 'canceled', 'timed_out', 'timeout'], true)) {
+                $message = $this->messageFromPayload($jobPayload)
+                    ?? ServiceUserMessage::transcriptionFailed('Transcription server');
+
+                throw new SpeechToTextException($message, (int) ($jobPayload['status_code'] ?? 0));
+            }
+
+            usleep(2_000_000);
+        } while (microtime(true) < $deadline);
+
+        throw new SpeechToTextException('Transcription server timed out while waiting for the async job.');
     }
 
     /**
@@ -518,7 +588,7 @@ class HostedTranscriptionApiService
         return Http::withToken($licenseKey)
             ->acceptJson()
             ->withOptions($this->http->options())
-            ->timeout((int) config('services.transcription_api.timeout', 120));
+            ->timeout((int) config('services.transcription_api.timeout', 1800));
     }
 
     private function url(string $path): string

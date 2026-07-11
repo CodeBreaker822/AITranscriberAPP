@@ -3,23 +3,6 @@
     'hasOfflineTranscriptionModel' => false,
 ])
 
-@php
-    $navItems = [
-        [
-            'key' => 'live',
-            'label' => 'Live',
-            'href' => route('transcription.live'),
-            'icon' => 'mic',
-        ],
-        [
-            'key' => 'upload',
-            'label' => 'Upload',
-            'href' => route('transcription.upload'),
-            'icon' => 'upload',
-        ],
-    ];
-@endphp
-
 <header data-app-header class="shrink-0 rounded-lg border border-white/10 bg-slate-950/80 px-4 py-3 shadow-[0_18px_60px_rgba(0,0,0,0.32)] backdrop-blur-xl">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <a href="{{ route('transcription.live') }}" class="flex min-w-0 items-center gap-3">
@@ -51,14 +34,10 @@
         <div class="flex w-full items-center gap-2 lg:w-auto">
             <nav aria-label="Transcription tools" class="flex min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.03] p-1 lg:w-auto lg:flex-none">
                 @foreach ($navItems as $item)
-                    @php
-                        $isActive = $activePage === $item['key'];
-                    @endphp
-
                     <a
                         href="{{ $item['href'] }}"
-                        aria-current="{{ $isActive ? 'page' : 'false' }}"
-                        class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition lg:flex-none {{ $isActive ? 'bg-cyan-300 text-slate-950 shadow-[0_10px_30px_rgba(103,232,249,0.16)]' : 'text-slate-300 hover:bg-white/8 hover:text-white' }}"
+                        aria-current="{{ $activePage === $item['key'] ? 'page' : 'false' }}"
+                        class="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition lg:flex-none {{ $activePage === $item['key'] ? 'bg-cyan-300 text-slate-950 shadow-[0_10px_30px_rgba(103,232,249,0.16)]' : 'text-slate-300 hover:bg-white/8 hover:text-white' }}"
                     >
                         @if ($item['icon'] === 'mic')
                             <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">

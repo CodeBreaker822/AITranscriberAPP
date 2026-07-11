@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\TranscriptPolisherException;
+use App\Models\AudioChunk;
+use App\Models\CleanTranscriptChunk;
+use App\Models\TranscriptSummary;
 use App\Services\TranscriptSummarizerService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
@@ -20,12 +22,12 @@ class TranscriptSummaryController extends Controller
             'category_name' => ['required', 'string', 'max:120'],
         ]);
 
-        $row = DB::table('transcript_summaries')
+        $summary = TranscriptSummary::query()
             ->where('user_id', (int) ($validated['user_id'] ?? 1))
             ->where('category_name', trim((string) $validated['category_name']))
             ->first();
 
-        return response()->json(['data' => $this->responseRow($row, $validated['category_name'])]);
+        return response()->json(['data' => $this->responseRow($summary, $validated['category_name'])]);
     }
 
     public function store(Request $request, TranscriptSummarizerService $summarizer): JsonResponse
@@ -44,7 +46,7 @@ class TranscriptSummaryController extends Controller
         $runToken = (string) Str::uuid();
         $now = now();
 
-        DB::table('transcript_summaries')->updateOrInsert(
+        TranscriptSummary::query()->updateOrCreate(
             ['user_id' => $userId, 'category_name' => $categoryName],
             [
                 'summary_text' => null,
@@ -56,8 +58,6 @@ class TranscriptSummaryController extends Controller
                 'run_token' => $runToken,
                 'started_at' => $now,
                 'completed_at' => null,
-                'created_at' => $now,
-                'updated_at' => $now,
             ],
         );
 
@@ -93,7 +93,7 @@ class TranscriptSummaryController extends Controller
             return response()->json(['message' => $message], $this->errorStatus($exception));
         }
 
-        $updated = DB::table('transcript_summaries')
+        $updated = TranscriptSummary::query()
             ->where('user_id', $userId)
             ->where('category_name', $categoryName)
             ->where('run_token', $runToken)
@@ -111,17 +111,17 @@ class TranscriptSummaryController extends Controller
             return response()->json(['message' => 'This summary was replaced by a newer request.'], 409);
         }
 
-        $row = DB::table('transcript_summaries')
+        $summary = TranscriptSummary::query()
             ->where('user_id', $userId)
             ->where('category_name', $categoryName)
             ->first();
 
-        return response()->json(['message' => 'summarized', 'data' => $this->responseRow($row, $categoryName)]);
+        return response()->json(['message' => 'summarized', 'data' => $this->responseRow($summary, $categoryName)]);
     }
 
     private function markFailed(int $userId, string $categoryName, string $runToken, string $message): void
     {
-        DB::table('transcript_summaries')
+        TranscriptSummary::query()
             ->where('user_id', $userId)
             ->where('category_name', $categoryName)
             ->where('run_token', $runToken)
@@ -133,43 +133,48 @@ class TranscriptSummaryController extends Controller
             ]);
     }
 
-    private function responseRow(?object $row, string $categoryName): array
+    private function responseRow(?TranscriptSummary $summary, string $categoryName): array
     {
         return [
             'category_name' => trim($categoryName),
-            'source_type' => $row?->source_type ?? 'raw',
-            'status' => $row?->status ?? 'idle',
-            'summary_text' => $row?->summary_text ?? '',
-            'error_message' => (string) ($row?->error_message ?? ''),
-            'provider' => $row?->provider,
-            'model' => $row?->model,
-            'started_at' => $row?->started_at,
-            'completed_at' => $row?->completed_at,
+            'source_type' => $summary?->source_type ?? 'raw',
+            'status' => $summary?->status ?? 'idle',
+            'summary_text' => $summary?->summary_text ?? '',
+            'error_message' => (string) ($summary?->error_message ?? ''),
+            'provider' => $summary?->provider,
+            'model' => $summary?->model,
+            'started_at' => $summary?->started_at,
+            'completed_at' => $summary?->completed_at,
         ];
     }
 
     private function wholeTranscript(int $userId, string $categoryName, string $sourceType): string
     {
         if ($sourceType === 'cleaned') {
-            $chunks = DB::table('clean_transcript_chunks')
+            $chunks = CleanTranscriptChunk::query()
                 ->where('user_id', $userId)
                 ->where('category_name', $categoryName)
                 ->whereNotNull('clean_text')
                 ->orderBy('clip_start_ms')
-                ->get(['range_label', 'clean_text as transcript_text']);
+                ->get(['range_label', 'clean_text']);
         } else {
-            $chunks = DB::table('audio_chunks')
+            $chunks = AudioChunk::query()
                 ->where('user_id', $userId)
                 ->where('category_name', $categoryName)
                 ->whereNotNull('translated_text')
                 ->orderBy('clip_start_ms')
-                ->get(['range_label', 'translated_text as transcript_text']);
+                ->get(['range_label', 'translated_text']);
         }
 
         return $chunks
-            ->filter(fn ($chunk): bool => trim((string) $chunk->transcript_text) !== '')
-            ->map(fn ($chunk): string => trim((string) $chunk->range_label)."\n".(string) $chunk->transcript_text)
+            ->filter(fn ($chunk): bool => trim((string) $this->transcriptText($chunk, $sourceType)) !== '')
+            ->map(fn ($chunk): string => trim((string) $chunk->range_label)."\n".$this->transcriptText($chunk, $sourceType))
             ->implode("\n\n");
+    }
+
+    private function transcriptText(AudioChunk|CleanTranscriptChunk $chunk, string $sourceType): string
+    {
+        return (string) ($sourceType === 'cleaned' ? $chunk->clean_text : $chunk->translated_text);
     }
 
     private function errorStatus(Throwable $exception): int

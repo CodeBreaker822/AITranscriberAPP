@@ -1,0 +1,30 @@
+ffmpeg version 8.1.2-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 16.1.0 (Rev2, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-zlib --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-sdl2 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxvid --enable-libaom --enable-libopenjpeg --enable-libvpx --enable-mediafoundation --enable-libass --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-openal --enable-libgme --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libtheora --enable-libvo-amrwbenc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-librubberband
+  libavutil      60. 26.102 / 60. 26.102
+  libavcodec     62. 28.102 / 62. 28.102
+  libavformat    62. 12.102 / 62. 12.102
+  libavdevice    62.  3.102 / 62.  3.102
+  libavfilter    11. 14.102 / 11. 14.102
+  libswscale      9.  5.102 /  9.  5.102
+  libswresample   6.  3.102 /  6.  3.102
+[aist#0:0/pcm_s16le @ 000002111b254200] Guessed Channel Layout: mono
+Input #0, wav, from 'E:\2026 Program Projects\Transcriber Project\AITranscriber\storage\app/private/audio-upload-sessions/1cbe642f-1408-43a1-a748-86b5da558557\chunk_00004-speech.wav':
+  Metadata:
+    date            : 2026-06-08 13:07
+    encoder         : Lavf62.12.102
+  Duration: 00:03:55.22, bitrate: 256 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 16000 Hz, mono, s16, 256 kb/s
+Stream mapping:
+  Stream #0:0 -> #0:0 (pcm_s16le (native) -> opus (libopus))
+Press [q] to stop, [?] for help
+Output #0, ogg, to 'E:\2026 Program Projects\Transcriber Project\AITranscriber\storage\app/private/audio-upload-sessions/1cbe642f-1408-43a1-a748-86b5da558557\chunk_00004-speech-online.ogg':
+  Metadata:
+    date            : 2026-06-08 13:07
+    encoder         : Lavf62.12.102
+  Stream #0:0: Audio: opus, 16000 Hz, mono, s16, 32 kb/s
+    Metadata:
+      encoder         : Lavc62.28.102 libopus
+      date            : 2026-06-08 13:07
+size=     178KiB time=00:00:47.27 bitrate=  30.9kbits/s speed=93.5x elapsed=0:00:00.50    size=     256KiB time=00:01:34.49 bitrate=  22.2kbits/s speed=91.8x elapsed=0:00:01.02    size=     512KiB time=00:02:22.15 bitrate=  29.5kbits/s speed=92.5x elapsed=0:00:01.53    size=     512KiB time=00:03:11.95 bitrate=  21.9kbits/s speed=  93x elapsed=0:00:02.06    [out#0/ogg @ 000002111b20a9c0] video:0KiB audio:898KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 1.989416%
+size=     916KiB time=00:03:55.21 bitrate=  31.9kbits/s speed=91.8x elapsed=0:00:02.56    
