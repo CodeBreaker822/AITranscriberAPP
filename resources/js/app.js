@@ -195,6 +195,7 @@ $(function () {
     const $languageControls = $('[data-language-control]');
     const $whisperModelControls = $('[data-whisper-model-control]');
     const $whisperModel = $('[data-whisper-model]');
+    const $onlineOnlyTranscriptActions = $('[data-furnish-live], [data-furnish-upload], [data-summarize]');
     const transcriptionEngineStorageKey = 'ai-transcriber-transcription-engine';
     const whisperModelStorageKey = 'ai-transcriber-whisper-model';
     const connectivityUrl = String($body.attr('data-update-connectivity-url') || '');
@@ -208,6 +209,7 @@ $(function () {
         const offline = getTranscriptionEngine() === 'offline';
         $languageControls.toggleClass('hidden', offline);
         $whisperModelControls.toggleClass('hidden', !offline);
+        $onlineOnlyTranscriptActions.toggleClass('hidden', offline);
     };
 
     const applyEngineAvailability = (connectivity) => {
@@ -389,6 +391,7 @@ $(function () {
         let preparedSections = [];
         let metadataUrl = null;
         let uploadInFlight = false;
+        let uploadCancelling = false;
         let currentSessionId = '';
         let currentCategoryName = '';
         let activeBatchPositions = [];
@@ -625,6 +628,9 @@ $(function () {
 
         const resetUploadProgress = (status = 'Ready', options = {}) => {
             const { keepCancelFlag = false, keepSherpaProgress = false } = options;
+            const displayStatus = status === 'Ready' && (cancelRequested || uploadCancelling)
+                ? 'Cancelled'
+                : status;
 
             stopSectionProgress();
             preparedSections = [];
@@ -632,6 +638,7 @@ $(function () {
             currentCategoryName = '';
             pauseRequested = false;
             uploadInFlight = false;
+            uploadCancelling = false;
             activePrepareXhrs.forEach((xhr) => xhr?.abort?.());
             activePrepareXhrs = [];
 
@@ -647,11 +654,11 @@ $(function () {
                 resetSherpaProgress();
             }
             resetUploadPhaseProgress();
-            if (status === 'Complete') {
+            if (displayStatus === 'Complete') {
                 $progressPercent.text('100%');
                 $progress.css('width', '100%');
             }
-            $status.text(status);
+            $status.text(displayStatus);
             renderQueue();
             syncUploadControls();
         };
@@ -659,13 +666,29 @@ $(function () {
         const syncUploadControls = () => {
             const hasSession = Boolean(currentSessionId);
 
-            $queueButton.prop('disabled', uploadInFlight || !selectedFile || hasSession);
-            $pauseButton.prop('disabled', !uploadInFlight || !hasSession || pauseRequested);
-            $continueButton.prop('disabled', uploadInFlight || !hasSession || !hasUnfinishedSections());
-            $retryButton.prop('disabled', uploadInFlight || !hasSession || !hasRetryableSections());
-            $cancelButton.prop('disabled', !uploadInFlight && !hasUploadProgress());
-            $categoryInput.prop('disabled', uploadInFlight);
-            $languageInput.prop('disabled', uploadInFlight);
+            $queueButton.prop('disabled', uploadInFlight || uploadCancelling || !selectedFile || hasSession);
+            $pauseButton.prop('disabled', uploadCancelling || !uploadInFlight || !hasSession || pauseRequested);
+            $continueButton.prop('disabled', uploadInFlight || uploadCancelling || !hasSession || !hasUnfinishedSections());
+            $retryButton.prop('disabled', uploadInFlight || uploadCancelling || !hasSession || !hasRetryableSections());
+            $cancelButton.prop('disabled', uploadCancelling || (!uploadInFlight && !hasUploadProgress()));
+            $categoryInput.prop('disabled', uploadInFlight && !uploadCancelling);
+            $languageInput.prop('disabled', uploadInFlight && !uploadCancelling);
+        };
+
+        const showUploadCancellingState = () => {
+            uploadCancelling = true;
+            uploadInFlight = false;
+            $status.text('Cancelling');
+            $status.attr('title', 'Cancelling active upload work and clearing pending sections.');
+            preparedSections = preparedSections.map((section) => section.status === 'Complete'
+                ? section
+                : {
+                    ...section,
+                    status: 'Cancelled',
+                    preparedMeta: 'Cancelling',
+                });
+            renderQueue();
+            syncUploadControls();
         };
 
         const renderEmptyQueue = (message = 'No pending recordings yet.') => {
@@ -1551,6 +1574,9 @@ $(function () {
         const setProcessingState = (isProcessing) => {
             uploadInFlight = isProcessing;
             if (isProcessing) {
+                uploadCancelling = false;
+            }
+            if (isProcessing) {
                 resetSherpaProgress();
             }
             $status.text(isProcessing ? 'Processing' : selectedFile ? 'Ready' : 'Ready');
@@ -2194,6 +2220,7 @@ $(function () {
             currentSessionId = '';
             currentCategoryName = '';
             cancelRequested = false;
+            uploadCancelling = false;
             clearUploadState();
             setProcessingState(false);
 
@@ -2356,6 +2383,7 @@ $(function () {
             currentSessionId = '';
             currentCategoryName = '';
             cancelRequested = false;
+            uploadCancelling = false;
             clearUploadState();
             setProcessingState(false);
             syncPlan();
@@ -2384,6 +2412,7 @@ $(function () {
             cleanedSections = [];
             cleanerStatus = 'Waiting';
             cleanerCompletedBatches = 0;
+            uploadCancelling = false;
             setProcessingState(true);
             $status.text(selectedFile.localPath ? 'Preparing source' : 'Uploading source 0%');
             renderQueue();
@@ -2478,6 +2507,7 @@ $(function () {
             }
 
             cancelRequested = false;
+            uploadCancelling = false;
             pauseRequested = false;
             setProcessingState(true);
             prepareUploadSections(currentSessionId, currentCategoryName || getUploadCategory())
@@ -2512,6 +2542,7 @@ $(function () {
                 }
                 : section);
             cancelRequested = false;
+            uploadCancelling = false;
             pauseRequested = false;
             setProcessingState(true);
             renderQueue();
@@ -2550,6 +2581,7 @@ $(function () {
             const hadActiveRequest = Boolean(sourceUploadXhr || activeSectionXhr || activePrepareXhrs.length);
 
             cancelWhisperProgress(activeSectionProgressId);
+            showUploadCancellingState();
 
             if (sourceUploadXhr) {
                 sourceUploadXhr.abort();
@@ -2562,7 +2594,11 @@ $(function () {
                 activeSectionXhr.abort();
             }
 
-            resetUploadProgress('Ready', { keepCancelFlag: hadActiveRequest });
+            window.setTimeout(() => {
+                if (cancelRequested || uploadCancelling) {
+                    resetUploadProgress('Cancelled');
+                }
+            }, hadActiveRequest ? 350 : 0);
             releaseSpeakerSession(speakerSessionId);
         });
 
