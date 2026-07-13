@@ -123,11 +123,12 @@
                 `;
                 option.querySelector('span span:first-child').textContent = String(model.label || model.id || 'Local model');
                 const memory = Number(model.runtime_memory_mb || 0);
+                const unsupportedReason = String(model.unsupported_reason || '');
                 option.querySelector('span span:nth-child(2)').textContent = supported
                     ? `${String(model.size || 'Offline model')}${memory > 0 ? ` · ~${memory} MB RAM` : ''}`
-                    : `${String(model.size || 'Offline model')} · exceeds safe RAM budget`;
+                    : unsupportedReason || `${String(model.size || 'Offline model')} · exceeds safe RAM budget`;
                 const optionButton = option.querySelector('button');
-                optionButton.textContent = installed ? 'Installed' : supported ? 'Download' : 'Low memory';
+                optionButton.textContent = installed ? 'Installed' : supported ? 'Download' : unsupportedReason ? 'Unavailable' : 'Low memory';
                 optionButton.disabled = downloading || installed || !supported;
                 optionButton.setAttribute('aria-label', `${optionButton.textContent} ${String(model.label || model.id || 'model')}`);
                 optionButton.addEventListener('click', () => startDownload(String(model.id || 'turbo')));

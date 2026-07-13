@@ -15,11 +15,13 @@
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",
+        "larastan/larastan": "^3.0",
         "laravel/pail": "^1.2.5",
         "laravel/pao": "^1.0.6",
         "laravel/pint": "^1.27",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.6",
+        "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^12.5.12"
     },
     "autoload": {
@@ -56,6 +58,9 @@
         "test": [
             ".\\php\\php.exe artisan config:clear --ansi",
             ".\\php\\php.exe artisan test"
+        ],
+        "analyse": [
+            ".\\php\\php.exe vendor\\bin\\phpstan analyse --memory-limit=1G"
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",

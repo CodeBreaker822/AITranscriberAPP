@@ -25,9 +25,9 @@ class FrontendDownloadAndProgressBehaviorTest extends TestCase
     {
         $script = file_get_contents(dirname(__DIR__, 2).'/resources/js/app.js');
 
-        $this->assertStringContainsString('beginSectionProgress(index + 1)', $script);
+        $this->assertStringContainsString('beginSectionProgress(index + 1, progressId', $script);
         $this->assertStringContainsString('await completeSectionProgress()', $script);
-        $this->assertStringContainsString('Process ${position || 0} out of ${total}', $script);
+        $this->assertStringContainsString('Processing ${activeBatchPositions[progressIndex]} of ${total}', $script);
         $this->assertStringContainsString('activeSectionProgress = 100', $script);
         $this->assertStringNotContainsString('Math.round((complete / total) * 100)', $script);
     }

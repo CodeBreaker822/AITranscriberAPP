@@ -87,6 +87,43 @@ class OfflineWhisperModelControllerTest extends TestCase
             ->assertJsonPath('models.1.supported', false);
     }
 
+    public function test_status_lists_the_fine_tuned_cebuano_ct2_model_as_runtime_incompatible(): void
+    {
+        $status = $this->getJson('/offline-model/status')
+            ->assertOk()
+            ->json();
+
+        $model = collect($status['models'])
+            ->firstWhere('id', 'cebuano-turbo-ct2');
+
+        $this->assertIsArray($model);
+        $this->assertSame('Cebuano/Bisaya Turbo', $model['label']);
+        $this->assertSame('ctranslate2', $model['runtime']);
+        $this->assertFalse($model['supported']);
+        $this->assertFalse($model['downloadable']);
+        $this->assertSame('https://huggingface.co/arrow2026/whisper-turbo-cebuano-epoch1-ct2/tree/main', $model['source_url']);
+        $this->assertStringContainsString('CTranslate2/faster-whisper', $model['unsupported_reason']);
+    }
+
+    public function test_fine_tuned_ct2_model_is_not_offered_as_a_whisper_cpp_transcription_choice(): void
+    {
+        $catalog = app(OfflineWhisperModelService::class)->catalog();
+
+        $this->assertContains('turbo', array_column($catalog, 'id'));
+        $this->assertNotContains('cebuano-turbo-ct2', array_column($catalog, 'id'));
+    }
+
+    public function test_fine_tuned_ct2_model_download_is_blocked_until_a_compatible_runtime_exists(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Requires a CTranslate2/faster-whisper runtime.');
+
+        app(OfflineWhisperModelService::class)->download(
+            'cebuano-turbo-ct2',
+            static function (): void {},
+        );
+    }
+
     public function test_download_streams_and_installs_the_verified_model(): void
     {
         $directory = storage_path('framework/testing/offline-whisper-'.uniqid());

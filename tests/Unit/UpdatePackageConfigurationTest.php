@@ -40,6 +40,19 @@ class UpdatePackageConfigurationTest extends TestCase
         $this->assertStringNotContainsString("'vulkan-1.dll'", $script);
     }
 
+    public function test_generated_database_and_process_artifacts_stay_out_of_git_and_update_packages(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $gitignore = file_get_contents($root.'/.gitignore');
+        $packager = file_get_contents($root.'/scripts/create-update-package.mjs');
+
+        $this->assertStringContainsString('/database/database.sqlite', $gitignore);
+        $this->assertStringContainsString('/storage/framework/process-temp/', $gitignore);
+        $this->assertStringContainsString("normalized === 'database/database.sqlite'", $packager);
+        $this->assertStringContainsString('entry.name.toLowerCase() === \'database.sqlite\'', $packager);
+        $this->assertStringContainsString('storage/', $packager);
+    }
+
     public function test_tauri_installer_resources_exclude_whisper_weights(): void
     {
         $config = json_decode(

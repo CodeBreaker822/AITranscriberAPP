@@ -118,6 +118,24 @@ class AppSettingsServiceTest extends TestCase
         ], $settings->transcriptionSelection('not-returned-by-server'));
     }
 
+    public function test_transcribe_upload_byte_limit_prefers_server_status_before_config_fallback(): void
+    {
+        config(['services.transcription_api.max_upload_bytes' => 2048]);
+        $settings = app(AppSettingsService::class);
+
+        $this->assertSame(2048, $settings->transcribeMaxUploadBytes());
+
+        $settings->setLicenseStatus([
+            'apis' => [
+                'transcribe' => [
+                    'max_batch_bytes' => 1024,
+                ],
+            ],
+        ]);
+
+        $this->assertSame(1024, $settings->transcribeMaxUploadBytes());
+    }
+
     public function test_it_supports_manual_resource_profile_overrides(): void
     {
         config([

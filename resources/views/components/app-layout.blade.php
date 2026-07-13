@@ -56,6 +56,7 @@
             data-upload-session-status-url="{{ route('audio-uploads.sessions.status') }}"
             data-audio-chunk-url="{{ route('audio-chunks.store') }}"
             data-audio-chunk-batch-url="{{ route('audio-chunks.store-batch') }}"
+            data-audio-chunk-status-url="{{ route('audio-chunks.status') }}"
             data-transcribe-max-batch-duration-ms="{{ $transcribeMaxBatchDurationMs }}"
             data-transcribe-max-batch-clips="{{ $transcribeMaxBatchClips }}"
             data-stored-url="{{ route('audio-chunks.index') }}"

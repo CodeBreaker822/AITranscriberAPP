@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Services\AudioFileChunkerService;
 use App\Services\OnlineAudioTransportService;
+use App\Services\SpeakerDiarizationService;
 use App\Services\SpeechAudioFilterService;
 use App\Services\SpeechToTextService;
 use App\Services\StoredAudioService;
@@ -170,6 +171,100 @@ class AudioChunkNoSpeechTest extends TestCase
             'mime_type' => 'audio/flac',
             'file_size_bytes' => strlen('prepared wav bytes'),
             'translated_text' => 'Maayong buntag.',
+        ]);
+    }
+
+    public function test_successful_final_live_chunk_releases_the_speaker_session(): void
+    {
+        $segmentPath = tempnam(sys_get_temp_dir(), 'aitranscriber-live-final-');
+        file_put_contents($segmentPath, 'final prepared wav bytes');
+
+        $this->mock(AudioFileChunkerService::class, function ($mock) use ($segmentPath): void {
+            $mock->shouldReceive('prepareLiveClip')->once()->andReturn([
+                'directory' => dirname($segmentPath),
+                'path' => $segmentPath,
+                'name' => 'live_00003.wav',
+                'mime_type' => 'audio/wav',
+                'size' => filesize($segmentPath),
+                'duration_ms' => 60000,
+            ]);
+            $mock->shouldReceive('cleanup')->once();
+        });
+
+        $this->mock(SpeechAudioFilterService::class, function ($mock) use ($segmentPath): void {
+            $mock->shouldReceive('prepare')->once()->andReturn([
+                'speech_detected' => true,
+                'audio' => [
+                    'path' => $segmentPath,
+                    'name' => 'live_00003.wav',
+                    'mime_type' => 'audio/wav',
+                    'size' => filesize($segmentPath),
+                    'duration_ms' => 60000,
+                ],
+                'vad' => [
+                    'has_speech' => true,
+                    'duration_ms' => 60000,
+                    'speech_ms' => 1200,
+                    'segments' => [
+                        ['start_ms' => 0, 'end_ms' => 1200, 'start_seconds' => 0.0, 'end_seconds' => 1.2],
+                    ],
+                ],
+            ]);
+        });
+
+        $this->mock(SpeechToTextService::class, function ($mock) use ($segmentPath): void {
+            $mock->shouldReceive('transcribe')->once()->with($segmentPath, [
+                'language_code' => 'en',
+                'clip_index' => 3,
+                'clip_start_ms' => 120000,
+                'clip_end_ms' => 180000,
+                'release_worker' => true,
+            ])->andReturn([
+                'text' => 'Final live transcript.',
+                'timestamps' => [],
+            ]);
+        });
+
+        $this->mock(SpeakerDiarizationService::class, function ($mock) use ($segmentPath): void {
+            $mock->shouldReceive('apply')->once()->with($segmentPath, [
+                'text' => 'Final live transcript.',
+                'timestamps' => [],
+            ], [
+                'clip_start_ms' => 120000,
+                'speaker_session_id' => 'live-session-1',
+            ])->andReturn([
+                'text' => 'Final live transcript.',
+                'timestamps' => [],
+            ]);
+            $mock->shouldReceive('releaseSession')->once()->with('live-session-1');
+        });
+
+        try {
+            $response = $this->postJson('/audio-chunks', [
+                'audio' => UploadedFile::fake()->create('clip.webm', 10, 'audio/webm'),
+                'category_name' => 'Meeting',
+                'clip_index' => 3,
+                'clip_start_ms' => 120000,
+                'clip_end_ms' => 180000,
+                'range_label' => '02:00-03:00',
+                'duration_ms' => 60000,
+                'language_code' => 'en',
+                'speaker_session_id' => 'live-session-1',
+                'finalize_session' => true,
+            ]);
+        } finally {
+            @unlink($segmentPath);
+        }
+
+        $response
+            ->assertCreated()
+            ->assertJsonPath('data.translated_text', 'Final live transcript.');
+
+        $this->assertDatabaseHas('audio_chunks', [
+            'category_name' => 'Meeting',
+            'original_name' => 'live_00003.wav',
+            'translated_text' => 'Final live transcript.',
+            'status' => 'transcribed',
         ]);
     }
 
@@ -753,7 +848,7 @@ class AudioChunkNoSpeechTest extends TestCase
         ]);
     }
 
-    public function test_loading_chunks_deletes_existing_no_speech_rows(): void
+    public function test_loading_chunks_does_not_delete_existing_rows(): void
     {
         DB::table('audio_chunks')->insert([
             [
@@ -798,10 +893,13 @@ class AudioChunkNoSpeechTest extends TestCase
 
         $response
             ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.translated_text', 'Proceed to the next agenda.');
+            ->assertJsonCount(2, 'data');
 
-        $this->assertDatabaseMissing('audio_chunks', [
+        $texts = collect($response->json('data'))->pluck('translated_text')->all();
+
+        $this->assertContains('No speech detected.', $texts);
+        $this->assertContains('Proceed to the next agenda.', $texts);
+        $this->assertDatabaseHas('audio_chunks', [
             'translated_text' => 'No speech detected.',
         ]);
     }

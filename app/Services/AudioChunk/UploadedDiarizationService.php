@@ -2,6 +2,7 @@
 
 namespace App\Services\AudioChunk;
 
+use App\Enums\AudioChunkStatus;
 use App\Jobs\DiarizeUploadedAudioBatch;
 use App\Models\AudioChunk;
 use App\Services\AudioFileChunkerService;
@@ -91,9 +92,9 @@ class UploadedDiarizationService
 
                 AudioChunk::query()
                     ->whereKey($audioChunkId)
-                    ->where('status', 'diarization_ready')
+                    ->where('status', AudioChunkStatus::DiarizationReady->value)
                     ->update([
-                        'status' => 'diarization_queued',
+                        'status' => AudioChunkStatus::DiarizationQueued->value,
                         'updated_at' => now(),
                     ]);
                 $this->queuePreparedAudio($audioChunkId, (string) $audio['path'], $speakerSessionId, $uploadSessionId);
@@ -109,7 +110,7 @@ class UploadedDiarizationService
                         AudioChunk::query()
                             ->whereKey($audioChunkId)
                             ->update([
-                                'status' => 'diarization_failed',
+                                'status' => AudioChunkStatus::DiarizationFailed->value,
                                 'updated_at' => now(),
                             ]);
                     } catch (\Throwable) {
@@ -177,7 +178,7 @@ class UploadedDiarizationService
         if ($transcription['timestamps'] === []) {
             $this->writeSegments($audioPath, $segments);
             $audioChunk->forceFill([
-                'status' => 'diarization_waiting_transcript',
+                'status' => AudioChunkStatus::DiarizationWaitingTranscript->value,
             ])->save();
 
             return;
@@ -191,7 +192,7 @@ class UploadedDiarizationService
         $audioChunk->forceFill([
             'translated_text' => (string) ($merged['text'] ?? $transcription['text']),
             'transcription_timestamps' => $merged['timestamps'] ?? $transcription['timestamps'],
-            'status' => 'transcribed',
+            'status' => AudioChunkStatus::Transcribed->value,
         ])->save();
 
         $this->deleteSidecar($audioPath);

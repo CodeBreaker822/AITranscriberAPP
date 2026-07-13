@@ -57,6 +57,19 @@ class OfflineWhisperModelService
             'runtime_memory_mb' => 2560,
             'gpu_memory_mb' => 2560,
         ],
+        'cebuano-turbo-ct2' => [
+            'label' => 'Cebuano/Bisaya Turbo',
+            'file' => 'model.bin',
+            'size' => '1.5 GiB',
+            'min_bytes' => 1500000000,
+            'sha1' => '',
+            'runtime_memory_mb' => 2560,
+            'gpu_memory_mb' => 2560,
+            'runtime' => 'ctranslate2',
+            'downloadable' => false,
+            'source_url' => 'https://huggingface.co/arrow2026/whisper-turbo-cebuano-epoch1-ct2/tree/main',
+            'unsupported_reason' => 'Requires a CTranslate2/faster-whisper runtime. The current offline engine supports whisper.cpp ggml models only.',
+        ],
     ];
 
     private ?string $resolvedModelUrl = null;
@@ -95,6 +108,10 @@ class OfflineWhisperModelService
 
     public function activeModelPath(string $model = self::DEFAULT_MODEL): ?string
     {
+        if (! $this->isWhisperCppModel($model)) {
+            return null;
+        }
+
         $path = $this->downloadPath($model);
 
         return is_file($path) && filesize($path) >= $this->minimumBytes($model)
@@ -137,7 +154,12 @@ class OfflineWhisperModelService
     public function download(string $model, callable $progress, ?callable $cancelled = null): void
     {
         $cancelled ??= static fn (): bool => false;
-        $this->model($model);
+        $definition = $this->model($model);
+
+        if (($definition['downloadable'] ?? true) !== true || ! $this->isWhisperCppModel($model)) {
+            throw new RuntimeException((string) ($definition['unsupported_reason'] ?? 'This offline model is not compatible with the current runtime.'));
+        }
+
         $failures = [];
         $this->prepareDownloadDirectory($model);
 
@@ -206,6 +228,13 @@ class OfflineWhisperModelService
         $hash = hash_init('sha1');
         $receivedBytes = 0;
         $lastReportedBytes = 0;
+
+        if (str_starts_with(strtolower($url), 'file://')) {
+            fclose($destination);
+
+            return $this->downloadLocalFileSource($model, $url, $progress, $cancelled);
+        }
+
         $handle = curl_init($url);
 
         curl_setopt_array($handle, [
@@ -284,6 +313,133 @@ class OfflineWhisperModelService
         ];
     }
 
+    /**
+     * @param  callable(array<string, mixed>): void  $progress
+     * @return array{successful: bool, error: string, sha1: string, received_bytes: int}
+     */
+    private function downloadLocalFileSource(string $model, string $url, callable $progress, callable $cancelled): array
+    {
+        $partialPath = $this->partialDownloadPath($model);
+        $sourcePath = $this->localFilePathFromUrl($url);
+
+        if ($sourcePath === null || ! is_file($sourcePath)) {
+            @unlink($partialPath);
+            $error = 'Local file does not exist.';
+            Log::error('Offline Whisper model cURL download failed.', [
+                'url' => $url,
+                'effective_url' => $url,
+                'status' => 0,
+                'curl_code' => 0,
+                'curl_error' => $error,
+                'ca_bundle' => $this->http->caBundlePath(),
+                'ca_bundle_exists' => is_file($this->http->caBundlePath()),
+            ]);
+
+            return [
+                'successful' => false,
+                'error' => $error,
+                'sha1' => '',
+                'received_bytes' => 0,
+            ];
+        }
+
+        $source = fopen($sourcePath, 'rb');
+        $destination = fopen($partialPath, 'wb');
+
+        if ($source === false || $destination === false) {
+            if (is_resource($source)) {
+                fclose($source);
+            }
+            if (is_resource($destination)) {
+                fclose($destination);
+            }
+
+            throw new RuntimeException('The offline model download file could not be opened.');
+        }
+
+        $hash = hash_init('sha1');
+        $receivedBytes = 0;
+        $totalBytes = max(0, (int) filesize($sourcePath));
+
+        try {
+            while (! feof($source)) {
+                if ($cancelled()) {
+                    @unlink($partialPath);
+
+                    return [
+                        'successful' => false,
+                        'error' => 'The offline model download was canceled.',
+                        'sha1' => '',
+                        'received_bytes' => $receivedBytes,
+                    ];
+                }
+
+                $chunk = fread($source, 1024 * 1024);
+
+                if ($chunk === false) {
+                    @unlink($partialPath);
+
+                    return [
+                        'successful' => false,
+                        'error' => 'Local file could not be read.',
+                        'sha1' => '',
+                        'received_bytes' => $receivedBytes,
+                    ];
+                }
+
+                if ($chunk === '') {
+                    continue;
+                }
+
+                if (fwrite($destination, $chunk) === false) {
+                    @unlink($partialPath);
+
+                    return [
+                        'successful' => false,
+                        'error' => 'Local file could not be copied.',
+                        'sha1' => '',
+                        'received_bytes' => $receivedBytes,
+                    ];
+                }
+
+                hash_update($hash, $chunk);
+                $receivedBytes += strlen($chunk);
+                $progress([
+                    'type' => 'progress',
+                    'received_bytes' => $receivedBytes,
+                    'total_bytes' => $totalBytes,
+                ]);
+            }
+        } finally {
+            fclose($source);
+            fclose($destination);
+        }
+
+        return [
+            'successful' => true,
+            'error' => '',
+            'sha1' => hash_final($hash),
+            'received_bytes' => $receivedBytes,
+        ];
+    }
+
+    private function localFilePathFromUrl(string $url): ?string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+
+        if (! is_string($path) || $path === '') {
+            return null;
+        }
+
+        $path = rawurldecode($path);
+
+        if (preg_match('/^\/[A-Za-z]:\//', $path) === 1) {
+            $path = ltrim($path, '/');
+        }
+
+        return str_replace('/', DIRECTORY_SEPARATOR, $path);
+    }
+
     public function modelUrl(): string
     {
         return $this->resolvedModelUrl ?? ($this->modelUrls(self::DEFAULT_MODEL)[0] ?? '');
@@ -333,6 +489,10 @@ class OfflineWhisperModelService
 
     public function supportsAvailableMemory(string $model): bool
     {
+        if (! $this->isWhisperCppModel($model)) {
+            return false;
+        }
+
         $budget = (int) $this->settings->resourceProfile()['memory_budget_mb'];
 
         return $budget === 0 || $this->requiredMemoryMb($model) <= $budget;
@@ -361,6 +521,10 @@ class OfflineWhisperModelService
                 'size_bytes' => $path !== null ? (int) filesize($path) : 0,
                 'runtime_memory_mb' => $definition['runtime_memory_mb'],
                 'gpu_memory_mb' => $definition['gpu_memory_mb'],
+                'runtime' => $definition['runtime'] ?? 'whisper.cpp',
+                'downloadable' => ($definition['downloadable'] ?? true) === true,
+                'source_url' => $definition['source_url'] ?? null,
+                'unsupported_reason' => $definition['unsupported_reason'] ?? null,
                 'supported' => $this->supportsAvailableMemory($key),
             ];
         }
@@ -376,15 +540,26 @@ class OfflineWhisperModelService
 
     public function catalog(): array
     {
+        $models = array_filter(
+            self::MODELS,
+            fn (array $definition): bool => ($definition['runtime'] ?? 'whisper.cpp') === 'whisper.cpp',
+        );
+
         return array_map(
             fn (array $definition, string $id): array => [
                 'id' => $id,
                 'label' => $definition['label'],
                 'size' => $definition['size'],
             ],
-            self::MODELS,
-            array_keys(self::MODELS),
+            $models,
+            array_keys($models),
         );
+    }
+
+    /** @return array<int, string> */
+    public function modelIds(): array
+    {
+        return array_keys(self::MODELS);
     }
 
     private function model(string $model): array
@@ -394,6 +569,11 @@ class OfflineWhisperModelService
         }
 
         return self::MODELS[$model];
+    }
+
+    private function isWhisperCppModel(string $model): bool
+    {
+        return ($this->model($model)['runtime'] ?? 'whisper.cpp') === 'whisper.cpp';
     }
 
 }

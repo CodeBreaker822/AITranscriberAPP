@@ -30,6 +30,7 @@ Route::post('/settings/audio-memory/stored', [AudioMemoryController::class, 'cle
 Route::post('/settings/audio-memory/all', [AudioMemoryController::class, 'clearAll'])->name('settings.audio-memory.all.clear');
 Route::post('/settings/transcript-memory', [TranscriptMemoryController::class, 'clear'])->name('settings.transcript-memory.clear');
 Route::get('/audio-chunks', [AudioChunkController::class, 'index'])->name('audio-chunks.index');
+Route::get('/audio-chunks/status', [AudioChunkController::class, 'status'])->name('audio-chunks.status');
 Route::post('/audio-chunks', [AudioChunkController::class, 'store'])->name('audio-chunks.store');
 Route::post('/audio-chunks/batch', [AudioChunkController::class, 'storeBatch'])->name('audio-chunks.store-batch');
 Route::post('/speaker-sessions/release', [AudioChunkController::class, 'releaseSpeakerSession'])->name('speaker-sessions.release');

@@ -118,19 +118,16 @@ class HostedTranscriptionApiServiceTest extends TestCase
         $this->assertSame('Hello', $result['timestamps'][0]['text']);
 
         Http::assertSent(function (Request $request): bool {
-            $body = $request->body();
+            $parts = collect($request->data());
 
             return $request->method() === 'POST'
                 && $request->url() === 'https://dilgaims.site/api/transcribe'
                 && $request->hasHeader('Authorization', 'Bearer license-123')
-                && str_contains($body, 'name="provider"')
-                && str_contains($body, 'deepgram')
-                && str_contains($body, 'name="model"')
-                && str_contains($body, 'nova-3')
-                && str_contains($body, 'name="language_code"')
-                && str_contains($body, 'en')
-                && str_contains($body, 'name="clip_index"')
-                && str_contains($body, '7');
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'audio')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'provider' && ($part['contents'] ?? null) === 'deepgram')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'model' && ($part['contents'] ?? null) === 'nova-3')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'language_code' && ($part['contents'] ?? null) === 'en')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'clip_index' && (int) ($part['contents'] ?? 0) === 7);
         });
     }
 
@@ -202,15 +199,134 @@ class HostedTranscriptionApiServiceTest extends TestCase
         $this->assertSame(2, $result[1]['clip_index']);
 
         Http::assertSent(function (Request $request): bool {
-            $body = $request->body();
+            $parts = collect($request->data());
 
             return $request->method() === 'POST'
                 && $request->url() === 'https://dilgaims.site/api/transcribe'
                 && $request->hasHeader('Authorization', 'Bearer license-123')
-                && substr_count($body, 'name="audio[]"') === 2
-                && str_contains($body, 'name="clip_index[0]"')
-                && str_contains($body, 'name="clip_index[1]"');
+                && $parts->where('name', 'audio[]')->count() === 2
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'provider' && ($part['contents'] ?? null) === 'deepgram')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'model' && ($part['contents'] ?? null) === 'nova-3')
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'language_code' && ($part['contents'] ?? null) === ['en', 'en'])
+                && $parts->contains(fn (array $part): bool => ($part['name'] ?? null) === 'clip_index' && ($part['contents'] ?? null) === [1, 2]);
         });
+    }
+
+    public function test_hosted_audio_uploads_use_streams_instead_of_loading_files_into_memory(): void
+    {
+        $service = file_get_contents(dirname(__DIR__, 2).'/app/Services/HostedApi/HostedTranscriptionClient.php');
+
+        $this->assertStringContainsString("fopen(\$file['path'], 'rb')", $service);
+        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed([$file]);', $service);
+        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed($files);', $service);
+        $this->assertStringContainsString('finally {', $service);
+        $this->assertStringNotContainsString("file_get_contents(\$file['path'])", $service);
+    }
+
+    public function test_hosted_api_clients_share_the_local_ssl_certificate_transport(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $apiClient = file_get_contents($root.'/app/Services/HostedApi/HostedApiClient.php');
+        $licenseClient = file_get_contents($root.'/app/Services/HostedApi/HostedLicenseClient.php');
+        $updateClient = file_get_contents($root.'/app/Services/HostedApi/HostedUpdateClient.php');
+        $transcriptionClient = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionClient.php');
+        $jobClient = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionJobClient.php');
+        $polishingClient = file_get_contents($root.'/app/Services/HostedApi/HostedPolishingClient.php');
+        $facade = file_get_contents($root.'/app/Services/HostedTranscriptionApiService.php');
+
+        $this->assertStringContainsString('TrustedHttpClient', $apiClient);
+        $this->assertStringContainsString('withOptions($this->http->options())', $apiClient);
+        $this->assertStringContainsString('return $this->http->options($options);', $apiClient);
+        $this->assertStringContainsString('withOptions($this->api->trustedOptions())', $licenseClient);
+        $this->assertStringContainsString("withOptions(\$this->api->trustedOptions(['stream' => true]))", $updateClient);
+
+        foreach ([$transcriptionClient, $jobClient, $polishingClient] as $client) {
+            $this->assertStringContainsString('HostedApiClient $api', $client);
+            $this->assertStringNotContainsString('Http::', $client);
+        }
+
+        $this->assertStringNotContainsString('Http::', $facade);
+        $this->assertSame(base_path('php/extras/ssl/cacert.pem'), config('services.http.ca_bundle'));
+        $this->assertFileExists(config('services.http.ca_bundle'));
+    }
+
+    public function test_it_rejects_single_audio_that_exceeds_the_server_reported_byte_limit_before_upload(): void
+    {
+        config(['services.transcription_api.base_url' => 'https://dilgaims.site/api']);
+
+        $settings = app(AppSettingsService::class);
+        $settings->setLicenseKey('license-123');
+        $settings->setLicenseStatus($this->licenseStatusPayload([
+            'apis' => [
+                'transcribe' => [
+                    'allowed' => true,
+                    'max_file_bytes' => 4,
+                ],
+            ],
+        ]));
+        $settings->setSpeechToTextProvider('deepgram');
+        $settings->setSpeechToTextModel('nova-3');
+
+        $audioPath = tempnam(sys_get_temp_dir(), 'aitranscriber-hosted-too-large-bytes-');
+        file_put_contents($audioPath, '12345');
+        Http::fake();
+
+        try {
+            app(SpeechToTextService::class)->transcribe($audioPath, ['language_code' => 'en']);
+            $this->fail('Expected hosted audio to be rejected before upload.');
+        } catch (SpeechToTextException $exception) {
+            $this->assertSame('Audio is too big.', $exception->getMessage());
+            $this->assertSame(422, $exception->getCode());
+        } finally {
+            @unlink($audioPath);
+        }
+
+        Http::assertNothingSent();
+    }
+
+    public function test_it_rejects_audio_batch_that_exceeds_the_total_byte_limit_before_upload(): void
+    {
+        config(['services.transcription_api.base_url' => 'https://dilgaims.site/api']);
+
+        $settings = app(AppSettingsService::class);
+        $settings->setLicenseKey('license-123');
+        $settings->setLicenseStatus($this->licenseStatusPayload([
+            'apis' => [
+                'transcribe' => [
+                    'allowed' => true,
+                    'supports_batch' => true,
+                    'max_batch_clips' => 20,
+                    'max_batch_duration_ms' => 1200000,
+                    'max_batch_bytes' => 10,
+                ],
+            ],
+        ]));
+        $settings->setSpeechToTextProvider('deepgram');
+        $settings->setSpeechToTextModel('nova-3');
+
+        $firstPath = tempnam(sys_get_temp_dir(), 'aitranscriber-hosted-batch-bytes-a-');
+        $secondPath = tempnam(sys_get_temp_dir(), 'aitranscriber-hosted-batch-bytes-b-');
+        file_put_contents($firstPath, '123456');
+        file_put_contents($secondPath, 'abcdef');
+        Http::fake();
+
+        try {
+            app(SpeechToTextService::class)->transcribeBatch([
+                ['audio' => $firstPath, 'clip_index' => 1, 'clip_start_ms' => 0, 'clip_end_ms' => 300000],
+                ['audio' => $secondPath, 'clip_index' => 2, 'clip_start_ms' => 300000, 'clip_end_ms' => 600000],
+            ], [
+                'language_code' => 'en',
+            ]);
+            $this->fail('Expected hosted batch audio to be rejected before upload.');
+        } catch (SpeechToTextException $exception) {
+            $this->assertSame('Audio is too big.', $exception->getMessage());
+            $this->assertSame(422, $exception->getCode());
+        } finally {
+            @unlink($firstPath);
+            @unlink($secondPath);
+        }
+
+        Http::assertNothingSent();
     }
 
     public function test_it_rejects_audio_that_exceeds_the_server_reported_batch_limit(): void
@@ -250,6 +366,102 @@ class HostedTranscriptionApiServiceTest extends TestCase
         }
 
         Http::assertNothingSent();
+    }
+
+    public function test_late_timeline_single_clip_uses_clip_duration_for_server_limit(): void
+    {
+        config(['services.transcription_api.base_url' => 'https://dilgaims.site/api']);
+
+        $settings = app(AppSettingsService::class);
+        $settings->setLicenseKey('license-123');
+        $settings->setLicenseStatus($this->licenseStatusPayload([
+            'apis' => [
+                'transcribe' => [
+                    'allowed' => true,
+                    'max_batch_duration_ms' => 1200000,
+                ],
+            ],
+        ]));
+        $settings->setSpeechToTextProvider('deepgram');
+        $settings->setSpeechToTextModel('nova-3');
+
+        $audioPath = tempnam(sys_get_temp_dir(), 'aitranscriber-hosted-late-');
+        file_put_contents($audioPath, 'fake audio bytes');
+
+        Http::fake([
+            'https://dilgaims.site/api/transcribe*' => Http::response([
+                'text' => 'Late timeline transcript.',
+                'timestamps' => [],
+                'provider' => 'deepgram',
+                'model' => 'nova-3',
+            ]),
+        ]);
+
+        try {
+            $result = app(SpeechToTextService::class)->transcribe($audioPath, [
+                'language_code' => 'en',
+                'clip_index' => 20,
+                'clip_start_ms' => 1200000,
+                'clip_end_ms' => 1260000,
+            ]);
+        } finally {
+            @unlink($audioPath);
+        }
+
+        $this->assertSame('Late timeline transcript.', $result['text']);
+
+        Http::assertSent(function (Request $request): bool {
+            return $request->method() === 'POST'
+                && $request->url() === 'https://dilgaims.site/api/transcribe';
+        });
+    }
+
+    public function test_single_clip_with_invalid_timing_is_not_rejected_by_duration_limit(): void
+    {
+        config(['services.transcription_api.base_url' => 'https://dilgaims.site/api']);
+
+        $settings = app(AppSettingsService::class);
+        $settings->setLicenseKey('license-123');
+        $settings->setLicenseStatus($this->licenseStatusPayload([
+            'apis' => [
+                'transcribe' => [
+                    'allowed' => true,
+                    'max_batch_duration_ms' => 1200000,
+                ],
+            ],
+        ]));
+        $settings->setSpeechToTextProvider('deepgram');
+        $settings->setSpeechToTextModel('nova-3');
+
+        $audioPath = tempnam(sys_get_temp_dir(), 'aitranscriber-hosted-invalid-time-');
+        file_put_contents($audioPath, 'fake audio bytes');
+
+        Http::fake([
+            'https://dilgaims.site/api/transcribe*' => Http::response([
+                'text' => 'Transcript without timing.',
+                'timestamps' => [],
+                'provider' => 'deepgram',
+                'model' => 'nova-3',
+            ]),
+        ]);
+
+        try {
+            $result = app(SpeechToTextService::class)->transcribe($audioPath, [
+                'language_code' => 'en',
+                'clip_index' => 1,
+                'clip_start_ms' => null,
+                'clip_end_ms' => 'not-a-number',
+            ]);
+        } finally {
+            @unlink($audioPath);
+        }
+
+        $this->assertSame('Transcript without timing.', $result['text']);
+
+        Http::assertSent(function (Request $request): bool {
+            return $request->method() === 'POST'
+                && $request->url() === 'https://dilgaims.site/api/transcribe';
+        });
     }
 
     public function test_transcription_connection_details_are_logged_but_not_exposed(): void

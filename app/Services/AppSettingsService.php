@@ -165,6 +165,27 @@ class AppSettingsService
         return $clips > 0 ? $clips : null;
     }
 
+    public function transcribeMaxUploadBytes(): ?int
+    {
+        $transcribe = $this->licenseStatus()['apis']['transcribe'] ?? [];
+        $keys = [
+            'max_batch_bytes',
+            'max_upload_bytes',
+            'max_audio_bytes',
+            'max_file_bytes',
+        ];
+
+        foreach ($keys as $key) {
+            $bytes = $this->positiveInt($transcribe[$key] ?? null);
+
+            if ($bytes !== null) {
+                return $bytes;
+            }
+        }
+
+        return $this->positiveInt(config('services.transcription_api.max_upload_bytes'));
+    }
+
     public function audioChunkSeconds(): int
     {
         return $this->clampInt((int) config('services.audio.chunk_seconds', 60), 1, 20 * 60);
@@ -506,6 +527,17 @@ class AppSettingsService
     private function clampInt(int $value, int $min, int $max): int
     {
         return max($min, min($value, max($min, $max)));
+    }
+
+    private function positiveInt(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $value = (int) $value;
+
+        return $value > 0 ? $value : null;
     }
 
     private function settingsTableExists(): bool

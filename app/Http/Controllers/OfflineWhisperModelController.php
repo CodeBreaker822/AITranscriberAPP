@@ -7,6 +7,7 @@ use App\Services\SpeakerDiarizationModelService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
@@ -28,7 +29,7 @@ class OfflineWhisperModelController extends Controller
         @set_time_limit(0);
         @ignore_user_abort(true);
         $validated = $request->validate([
-            'model' => ['nullable', 'string', 'in:tiny,small,medium,large,turbo'],
+            'model' => ['nullable', 'string', Rule::in($models->modelIds())],
         ]);
         $model = (string) ($validated['model'] ?? OfflineWhisperModelService::DEFAULT_MODEL);
 

@@ -1,3 +1,19 @@
+import { buildDeleteErrorMessage, buildStorageLoadErrorMessage, buildUploadErrorMessage, buildUploadSessionErrorMessage } from './shared/api-errors.js';
+import { escapeHtml, notify, notifyError, readNearbyControlValue, withButtonLoading } from './shared/dom.js';
+import { exportTranscriptRows, saveTextExport } from './shared/export-service.js';
+import { formatBytes, formatClipRange, formatClock, formatRelativeClock, slugify, sortByTimeAscending } from './shared/formatters.js';
+import { clampProgressPercent, createPhaseProgress, phaseProgressAverage, phaseProgressSummary } from './shared/progress.js';
+import {
+    buildExportRows,
+    hasUsefulTranscript,
+    isUsefulTranscriptText,
+    renderTranscriptText,
+    speakerLabel,
+    speakerTurnsFromTimestamps,
+} from './shared/transcripts.js';
+import { createLiveWorkflowState } from './live/live-state.js';
+import { createUploadWorkflowState } from './upload/upload-state.js';
+
 $(function () {
     const $body = $('body');
     const audioChunkSeconds = Math.max(1, Number($body.data('audio-chunk-seconds') || 60) || 60);
@@ -11,82 +27,6 @@ $(function () {
 
         return audioChunkSeconds === 1 ? 'one-second' : `${audioChunkSeconds}-second`;
     })();
-    const browserDownloadFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
-        const body = /application\/(vnd\.ms-excel|msword)/i.test(mimeType)
-            ? `\ufeff${content}`
-            : content;
-        const blob = new Blob([body], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        window.setTimeout(() => {
-            link.remove();
-            URL.revokeObjectURL(url);
-        }, 1000);
-
-        if (typeof window.showNotification === 'function') {
-            window.showNotification(`Export download started: ${filename}`, 'success');
-        }
-    };
-
-    const saveTranscriptExport = async ({
-        filename,
-        content,
-        mimeType = 'text/plain;charset=utf-8',
-        extension = 'txt',
-        filterName = 'Text files',
-    }) => {
-        const invoke = window.__TAURI__?.core?.invoke;
-
-        if (typeof invoke !== 'function') {
-            browserDownloadFile(filename, content, mimeType);
-            return;
-        }
-
-        try {
-            const path = await invoke('save_text_export_with_dialog', {
-                content,
-                filename,
-                defaultExtension: extension,
-                filterName,
-                filterExtensions: [extension],
-            });
-
-            if (path && typeof window.showNotification === 'function') {
-                window.showNotification(`Export saved to ${path}`, 'success');
-            }
-        } catch (error) {
-            if (extension !== 'txt') {
-                browserDownloadFile(filename, content, mimeType);
-                return;
-            }
-
-            try {
-                const path = await invoke('save_text_export_with_dialog', { content });
-
-                if (path && typeof window.showNotification === 'function') {
-                    window.showNotification(`Export saved to ${path}`, 'success');
-                }
-            } catch (fallbackError) {
-                if (typeof window.showNotification === 'function') {
-                    const message = String(fallbackError || error || '').trim();
-                    window.showNotification(message || 'Could not save the export. Please try again.', 'error');
-                }
-            }
-        }
-    };
-
-    const saveTextExport = (filename, content) => saveTranscriptExport({
-        filename,
-        content,
-        mimeType: 'text/plain;charset=utf-8',
-        extension: 'txt',
-        filterName: 'Text files',
-    });
-
     const openExternalLink = async (url) => {
         const invoke = window.__TAURI__?.core?.invoke;
 
@@ -108,24 +48,6 @@ $(function () {
         || `speaker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const createTranscriptionProgressId = () => window.crypto?.randomUUID?.()
         || `progress-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const clampProgressPercent = (value) => Math.max(0, Math.min(100, Number(value || 0)));
-    const createPhaseProgress = (definitions) => Object.fromEntries(
-        definitions.map((phase) => [phase.key, 0]),
-    );
-    const phaseProgressAverage = (phases, definitions) => {
-        const keys = definitions.map((phase) => phase.key);
-
-        if (!keys.length) {
-            return 0;
-        }
-
-        const total = keys.reduce((sum, key) => sum + clampProgressPercent(phases?.[key]), 0);
-
-        return Math.round(total / keys.length);
-    };
-    const phaseProgressSummary = (phases, definitions) => definitions
-        .map((phase) => `${phase.label} ${Math.round(clampProgressPercent(phases?.[phase.key]))}%`)
-        .join(' | ');
     const whisperProgressHandlers = new Map();
     const registerWhisperProgress = (progressId, callback) => {
         if (progressId) {
@@ -154,7 +76,7 @@ $(function () {
     if (typeof tauriEventListen === 'function') {
         tauriEventListen('offline-whisper-progress', (event) => {
             const progressId = String(event?.payload?.progress_id || '');
-            const percent = Math.max(0, Math.min(100, Number(event?.payload?.percent) || 0));
+            const percent = clampProgressPercent(event?.payload?.percent);
             whisperProgressHandlers.get(progressId)?.(percent);
         }).catch(() => {});
     }
@@ -184,236 +106,6 @@ $(function () {
             contentType: false,
         });
     };
-
-    const escapeTranscriptHtml = (value) => $('<div>').text(String(value || '')).html();
-
-    const isUsefulTranscriptText = (value) => {
-        const normalized = String(value || '').trim().toLowerCase();
-
-        return normalized !== '' && normalized !== 'no speech detected' && normalized !== 'no speech detected.';
-    };
-
-    const speakerLabel = (speakerId) => {
-        const match = String(speakerId || '').match(/(\d+)$/);
-
-        return match ? `Speaker ${Math.max(1, Number(match[1]))}` : 'Speaker';
-    };
-
-    const appendTranscriptPart = (current, part) => {
-        const text = String(part || '').trim();
-
-        if (!current || !text) {
-            return current || text;
-        }
-
-        return /^[.,!?;:%)\]}]/u.test(text) || /[(\[{]$/u.test(current)
-            ? `${current}${text}`
-            : `${current} ${text}`;
-    };
-
-    const speakerTurnsFromTimestamps = (timestamps = []) => {
-        const entries = Array.isArray(timestamps) ? timestamps : [];
-        const turns = [];
-
-        entries.forEach((entry) => {
-            const part = String(entry?.text || '').trim();
-            const speakerId = String(entry?.speaker_id || entry?.speakerId || '').trim();
-
-            if (!part || !speakerId) {
-                return;
-            }
-
-            const previous = turns[turns.length - 1];
-
-            if (previous?.speakerId === speakerId) {
-                previous.text = appendTranscriptPart(previous.text, part);
-                return;
-            }
-
-            turns.push({ speakerId, text: part });
-        });
-
-        return turns;
-    };
-
-    const transcriptTextWithSpeakerTurns = (text, timestamps = []) => {
-        const turns = speakerTurnsFromTimestamps(timestamps);
-
-        if (!turns.length) {
-            return String(text || '').trim();
-        }
-
-        return turns
-            .map((turn) => `${speakerLabel(turn.speakerId)}: ${turn.text}`)
-            .join('\n');
-    };
-
-    const exportRowsToText = (rows) => rows
-        .map((row) => [row.rangeLabel, row.transcriptText].filter(Boolean).join('\n'))
-        .join('\n\n');
-
-    const exportDocumentTitle = (title, variantLabel) => `${title} - ${variantLabel} Transcript`;
-
-    const exportRowsToSpreadsheetHtml = ({ title, variantLabel, rows }) => `<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <style>
-        body { font-family: Calibri, Arial, sans-serif; color: #0f172a; }
-        h1 { color: #0891b2; font-size: 22px; margin: 0 0 4px; }
-        .meta { color: #64748b; font-size: 12px; margin: 0 0 14px; }
-        table { border-collapse: collapse; width: 100%; }
-        th { background: #0f172a; color: #ffffff; font-weight: 700; padding: 9px; text-align: left; border: 1px solid #1e293b; }
-        td { padding: 8px; vertical-align: top; border: 1px solid #cbd5e1; }
-        tr:nth-child(even) td { background: #f8fafc; }
-        .range { color: #0891b2; font-weight: 700; white-space: nowrap; }
-        .speaker { color: #0f766e; font-weight: 700; }
-        .transcript { white-space: pre-wrap; line-height: 1.35; }
-    </style>
-</head>
-<body>
-    <h1>${escapeTranscriptHtml(exportDocumentTitle(title, variantLabel))}</h1>
-    <p class="meta">Generated by ASTRA AITranscriber</p>
-    <table>
-        <thead>
-            <tr>
-                <th>#</th>
-                <th>Time Range</th>
-                <th>Speakers</th>
-                <th>Transcript</th>
-            </tr>
-        </thead>
-        <tbody>
-            ${rows.map((row, index) => `
-                <tr>
-                    <td>${index + 1}</td>
-                    <td class="range">${escapeTranscriptHtml(row.rangeLabel)}</td>
-                    <td class="speaker">${escapeTranscriptHtml(row.speakerLabels.join(', ') || 'Transcript')}</td>
-                    <td class="transcript">${escapeTranscriptHtml(row.transcriptText)}</td>
-                </tr>
-            `).join('')}
-        </tbody>
-    </table>
-</body>
-</html>`;
-
-    const exportRowsToWordHtml = ({ title, variantLabel, rows }) => `<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <style>
-        body { font-family: Calibri, Arial, sans-serif; color: #111827; line-height: 1.5; }
-        .page { max-width: 760px; margin: 0 auto; }
-        h1 { margin: 0 0 4px; color: #0f172a; font-size: 26px; }
-        .subtitle { margin: 0 0 20px; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1.8px; }
-        .section { border-top: 2px solid #bae6fd; padding: 14px 0 10px; }
-        .range { display: inline-block; margin-bottom: 8px; padding: 4px 8px; border-radius: 999px; background: #ecfeff; color: #0e7490; font-weight: 700; }
-        p { margin: 0 0 8px; }
-        .speaker { color: #0f766e; font-weight: 700; }
-    </style>
-</head>
-<body>
-    <div class="page">
-        <h1>${escapeTranscriptHtml(exportDocumentTitle(title, variantLabel))}</h1>
-        <p class="subtitle">Generated by ASTRA AITranscriber</p>
-        ${rows.map((row) => `
-            <div class="section">
-                <div class="range">${escapeTranscriptHtml(row.rangeLabel || 'Transcript')}</div>
-                ${row.turns.length
-                    ? row.turns.map((turn) => `<p><span class="speaker">${escapeTranscriptHtml(speakerLabel(turn.speakerId))}:</span> ${escapeTranscriptHtml(turn.text)}</p>`).join('')
-                    : `<p>${escapeTranscriptHtml(row.transcriptText)}</p>`}
-            </div>
-        `).join('')}
-    </div>
-</body>
-</html>`;
-
-    const buildExportRows = (items, useCleaned) => items
-        .map((item) => {
-            const transcript = useCleaned
-                ? (item.cleanText || item.clean_text || '')
-                : (item.translatedText || item.translated_text || item.text || '');
-            const timestamps = useCleaned
-                ? (item.cleanTimestamps || item.clean_timestamps || [])
-                : (item.timestamps || item.transcription_timestamps || []);
-            const turns = speakerTurnsFromTimestamps(timestamps);
-            const speakerLabels = [...new Set(turns.map((turn) => speakerLabel(turn.speakerId)))];
-
-            return {
-                rangeLabel: item.rangeLabel || item.range_label || '',
-                transcriptText: transcriptTextWithSpeakerTurns(transcript, timestamps),
-                turns,
-                speakerLabels,
-            };
-        })
-        .filter((row) => isUsefulTranscriptText(row.transcriptText));
-
-    const exportTranscriptRows = ({ rows, format, filenameBase, title, variantLabel }) => {
-        const normalizedFormat = String(format || 'txt').toLowerCase();
-
-        if (normalizedFormat === 'excel') {
-            return saveTranscriptExport({
-                filename: `${filenameBase}.xls`,
-                content: exportRowsToSpreadsheetHtml({ title, variantLabel, rows }),
-                mimeType: 'application/vnd.ms-excel;charset=utf-8',
-                extension: 'xls',
-                filterName: 'Excel files',
-            });
-        }
-
-        if (normalizedFormat === 'word') {
-            return saveTranscriptExport({
-                filename: `${filenameBase}.doc`,
-                content: exportRowsToWordHtml({ title, variantLabel, rows }),
-                mimeType: 'application/msword;charset=utf-8',
-                extension: 'doc',
-                filterName: 'Word documents',
-            });
-        }
-
-        return saveTextExport(`${filenameBase}.txt`, exportRowsToText(rows));
-    };
-
-    const withButtonLoading = async ($button, callback) => {
-        if (typeof window.toggleLoading === 'function' && $button?.length) {
-            window.toggleLoading($button, true);
-        }
-
-        try {
-            return await callback();
-        } finally {
-            if (typeof window.toggleLoading === 'function' && $button?.length) {
-                window.toggleLoading($button, false);
-            }
-        }
-    };
-
-    const readNearbyControlValue = (event, selector, fallback = '') => {
-        const $trigger = $(event?.currentTarget || []);
-        const nearby = $trigger.siblings(selector).first().val();
-
-        return nearby !== undefined ? nearby : ($(selector).first().val() ?? fallback);
-    };
-
-    const renderTranscriptText = (text, timestamps = []) => {
-        const turns = speakerTurnsFromTimestamps(timestamps);
-
-        if (!turns.length) {
-            return `<p class="whitespace-pre-line break-words text-xs leading-5 text-slate-100">${escapeTranscriptHtml(text)}</p>`;
-        }
-
-        return `
-            <div class="space-y-1.5" data-speaker-turns>
-                ${turns.map((turn) => `
-                    <div class="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2" data-speaker-id="${escapeTranscriptHtml(turn.speakerId)}">
-                        <span class="whitespace-nowrap text-xs font-semibold leading-5 text-cyan-300">${escapeTranscriptHtml(speakerLabel(turn.speakerId))}:</span>
-                        <span class="break-words text-xs leading-5 text-slate-100">${escapeTranscriptHtml(turn.text)}</span>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    };
-
     const $transcriptionEngine = $('[data-transcription-engine-toggle]');
     const $transcriptionEngineSwitch = $('[data-transcription-engine-switch]');
     const $languageControls = $('[data-language-control]');
@@ -542,12 +234,6 @@ $(function () {
     if ($body.data('page') === 'upload') {
         const uploadFrontendVersion = 'upload-flow-v4-queue-parity';
         const uploadStateStorageKey = 'ai-transcriber-upload-session';
-        const notify = (message, type = 'success') => {
-            if (typeof window.showNotification === 'function') {
-                window.showNotification(message, type);
-            }
-        };
-        const notifyError = (message) => notify(message, 'error');
         const pause = (milliseconds) => new Promise((resolve) => {
             window.setTimeout(resolve, milliseconds);
         });
@@ -568,6 +254,7 @@ $(function () {
         const uploadSessionStatusUrl = String($body.attr('data-upload-session-status-url') || '');
         const audioChunkUrl = String($body.attr('data-audio-chunk-url') || '');
         const audioChunkBatchUrl = String($body.attr('data-audio-chunk-batch-url') || '');
+        const audioChunkStatusUrl = String($body.attr('data-audio-chunk-status-url') || '');
         const maxTranscribeBatchDurationMs = Math.max(1, Number($body.attr('data-transcribe-max-batch-duration-ms') || 1200000) || 1200000);
         const maxTranscribeBatchClips = Math.max(1, Number($body.attr('data-transcribe-max-batch-clips') || 20) || 20);
         const storedUrl = String($body.attr('data-stored-url') || '');
@@ -610,95 +297,17 @@ $(function () {
         const $cleanerProgressBar = $('[data-cleaner-progress-bar]');
         const $cleanerProgressNote = $('[data-cleaner-progress-note]');
 
-        let selectedFile = null;
-        let selectedDurationMs = 0;
-        let preparedSections = [];
-        let metadataUrl = null;
-        let uploadInFlight = false;
-        let uploadCancelling = false;
-        let currentSessionId = '';
-        let currentCategoryName = '';
-        let activeBatchPositions = [];
-        let cancelRequested = false;
-        let pauseRequested = false;
-        let sourceUploadXhr = null;
-        let activePrepareXhrs = [];
-        let activeSectionXhr = null;
-        let activeSectionPosition = 0;
-        let activeSectionProgress = 0;
-        let activeSectionProgressTimer = null;
-        let activeSectionProgressId = '';
-        let activeUploadPhaseProgress = null;
-        let activeUploadPhaseDefinitions = [];
-        let sherpaProgressActive = false;
-        let activeDiarizationMonitorGeneration = 0;
-        let cleanedSections = [];
-        let furnishInFlight = false;
-        let cleanerStatus = 'Waiting';
-        let cleanerCompletedBatches = 0;
-        let uploadCategories = [];
-        let uploadStoredItems = [];
-        let uploadCleanedCategoryName = '';
-        let activeUploadAudio = null;
-        let activeUploadAudioId = null;
-        let uploadShowingVadLogs = false;
-
-        const formatClock = (milliseconds) => {
-            const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-            const hours = Math.floor(totalSeconds / 3600);
-            const minutes = Math.floor(totalSeconds / 60);
-            const seconds = totalSeconds % 60;
-
-            if (hours > 0) {
-                return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-            }
-
-            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-        };
-
-        const formatBytes = (bytes) => {
-            if (!Number.isFinite(bytes) || bytes <= 0) {
-                return '0 MB';
-            }
-
-            const units = ['B', 'KB', 'MB', 'GB'];
-            const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-            const value = bytes / (1024 ** index);
-
-            return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
-        };
-
-        const formatRelativeClock = (milliseconds) => `+${formatClock(milliseconds)}`;
+        const uploadState = createUploadWorkflowState();
 
         const getChunkLengthMs = () => audioChunkLengthMs;
         $chunkSize.val(String(audioChunkSeconds));
 
         const getUploadPrepareConcurrency = () => Math.max(1, Math.min(
-            preparedSections.length || 1,
+            uploadState.preparedSections.length || 1,
             Number($body.attr('data-resource-cpu-threads') || window.navigator?.hardwareConcurrency || 1) || 1,
         ));
 
-        const slugify = (value) => String(value || 'transcription')
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'transcription';
-
-        const escapeHtml = (value) => $('<div>').text(String(value || '')).html();
-
-        const hasUsefulTranscriptText = (value) => {
-            const normalized = String(value || '').trim().toLowerCase();
-
-            return normalized !== '' && normalized !== 'no speech detected' && normalized !== 'no speech detected.';
-        };
-
-        const hasUsefulUploadTranscript = (item) => hasUsefulTranscriptText(
-            item?.translatedText || item?.translated_text || item?.text || '',
-        );
-
-        const downloadTextFile = (filename, content) => {
-            saveTextExport(filename, content);
-        };
+        const hasUsefulUploadTranscript = hasUsefulTranscript;
 
         const getUploadCategory = () => String($categoryInput.val() || '').trim();
 
@@ -707,25 +316,25 @@ $(function () {
             : String($languageInput.val() || 'multi').trim() || 'multi';
 
         const hasCleanedUploadTranscriptForCategory = (categoryName) => (
-            uploadCleanedCategoryName
-            && String(uploadCleanedCategoryName).toLowerCase() === String(categoryName || '').toLowerCase()
+            uploadState.uploadCleanedCategoryName
+            && String(uploadState.uploadCleanedCategoryName).toLowerCase() === String(categoryName || '').toLowerCase()
         );
 
         const syncTranscriptCategory = () => {
-            $transcriptCategory.text(getUploadCategory() || selectedFile?.name || 'Upload audio');
+            $transcriptCategory.text(getUploadCategory() || uploadState.selectedFile?.name || 'Upload audio');
         };
 
         const saveUploadState = () => {
-            if (!currentSessionId) {
+            if (!uploadState.currentSessionId) {
                 return;
             }
 
             try {
                 window.localStorage.setItem(uploadStateStorageKey, JSON.stringify({
-                    sessionId: currentSessionId,
-                    categoryName: currentCategoryName || getUploadCategory(),
-                    durationMs: selectedDurationMs,
-                    sections: preparedSections,
+                    sessionId: uploadState.currentSessionId,
+                    categoryName: uploadState.currentCategoryName || getUploadCategory(),
+                    durationMs: uploadState.selectedDurationMs,
+                    sections: uploadState.preparedSections,
                     savedAt: Date.now(),
                 }));
             } catch (error) {
@@ -739,11 +348,11 @@ $(function () {
             }
         };
 
-        const hasRetryableSections = () => preparedSections.some((section) => ['Failed', 'Cancelled'].includes(section.status));
+        const hasRetryableSections = () => uploadState.preparedSections.some((section) => ['Failed', 'Cancelled'].includes(section.status));
 
-        const hasUnfinishedSections = () => preparedSections.some((section) => section.status !== 'Complete');
+        const hasUnfinishedSections = () => uploadState.preparedSections.some((section) => section.status !== 'Complete');
 
-        const hasUploadProgress = () => preparedSections.length > 0;
+        const hasUploadProgress = () => uploadState.preparedSections.length > 0;
 
         const uploadOnlinePhaseDefinitions = [
             { key: 'prepare', label: 'Prepare' },
@@ -763,30 +372,30 @@ $(function () {
             ? uploadOfflinePhaseDefinitions
             : uploadOnlinePhaseDefinitions;
         const resetUploadPhaseProgress = () => {
-            activeUploadPhaseProgress = null;
-            activeUploadPhaseDefinitions = [];
+            uploadState.activeUploadPhaseProgress = null;
+            uploadState.activeUploadPhaseDefinitions = [];
             $progressPercent.text('0%');
             $progress.css('width', '0%');
             $status.removeAttr('title');
         };
         const beginUploadPhaseProgress = (label = 'Processing') => {
-            activeUploadPhaseDefinitions = getUploadPhaseDefinitions();
-            activeUploadPhaseProgress = createPhaseProgress(activeUploadPhaseDefinitions);
+            uploadState.activeUploadPhaseDefinitions = getUploadPhaseDefinitions();
+            uploadState.activeUploadPhaseProgress = createPhaseProgress(uploadState.activeUploadPhaseDefinitions);
             $status.text(label);
-            $status.attr('title', phaseProgressSummary(activeUploadPhaseProgress, activeUploadPhaseDefinitions));
+            $status.attr('title', phaseProgressSummary(uploadState.activeUploadPhaseProgress, uploadState.activeUploadPhaseDefinitions));
             $progressPercent.text('0%');
             $progress.css('width', '0%');
         };
         const renderUploadPhaseProgress = (label = '') => {
-            if (!activeUploadPhaseProgress || !activeUploadPhaseDefinitions.length) {
+            if (!uploadState.activeUploadPhaseProgress || !uploadState.activeUploadPhaseDefinitions.length) {
                 return false;
             }
 
-            const percent = phaseProgressAverage(activeUploadPhaseProgress, activeUploadPhaseDefinitions);
+            const percent = phaseProgressAverage(uploadState.activeUploadPhaseProgress, uploadState.activeUploadPhaseDefinitions);
 
             $progressPercent.text(`${percent}%`);
             $progress.css('width', `${percent}%`);
-            $status.attr('title', phaseProgressSummary(activeUploadPhaseProgress, activeUploadPhaseDefinitions));
+            $status.attr('title', phaseProgressSummary(uploadState.activeUploadPhaseProgress, uploadState.activeUploadPhaseDefinitions));
             if (label) {
                 $status.text(label);
             }
@@ -794,11 +403,11 @@ $(function () {
             return true;
         };
         const updateUploadPhaseProgress = (updates = {}, label = '') => {
-            if (!activeUploadPhaseProgress || !activeUploadPhaseDefinitions.length) {
+            if (!uploadState.activeUploadPhaseProgress || !uploadState.activeUploadPhaseDefinitions.length) {
                 beginUploadPhaseProgress(label || 'Processing');
             }
 
-            activeUploadPhaseProgress = {
+            uploadState.activeUploadPhaseProgress = {
                 ...activeUploadPhaseProgress,
                 ...Object.fromEntries(Object.entries(updates).map(([key, value]) => [key, clampProgressPercent(value)])),
             };
@@ -818,7 +427,7 @@ $(function () {
         };
 
         const resetSherpaProgress = () => {
-            sherpaProgressActive = false;
+            uploadState.sherpaProgressActive = false;
             $sherpaProgress.addClass('hidden');
             $sherpaStatus.text('Waiting');
             $sherpaPercent.text('0%');
@@ -833,7 +442,7 @@ $(function () {
             const failed = Math.max(0, Number(options.failed || 0));
             const status = options.status || (safeDone >= safeTotal ? 'Complete' : 'Diarization in progress');
 
-            sherpaProgressActive = safeTotal > 0 && percent < 100;
+            uploadState.sherpaProgressActive = safeTotal > 0 && percent < 100;
             $sherpaProgress.toggleClass('hidden', safeTotal === 0);
             $sherpaStatus.text(failed > 0
                 ? `${status} ${safeDone} / ${safeTotal}, ${failed} failed`
@@ -844,27 +453,27 @@ $(function () {
 
         const resetUploadProgress = (status = 'Ready', options = {}) => {
             const { keepCancelFlag = false, keepSherpaProgress = false } = options;
-            const displayStatus = status === 'Ready' && (cancelRequested || uploadCancelling)
+            const displayStatus = status === 'Ready' && (uploadState.cancelRequested || uploadState.uploadCancelling)
                 ? 'Cancelled'
                 : status;
 
             stopSectionProgress();
-            preparedSections = [];
-            currentSessionId = '';
-            currentCategoryName = '';
-            pauseRequested = false;
-            uploadInFlight = false;
-            uploadCancelling = false;
-            activePrepareXhrs.forEach((xhr) => xhr?.abort?.());
-            activePrepareXhrs = [];
+            uploadState.preparedSections = [];
+            uploadState.currentSessionId = '';
+            uploadState.currentCategoryName = '';
+            uploadState.pauseRequested = false;
+            uploadState.uploadInFlight = false;
+            uploadState.uploadCancelling = false;
+            uploadState.activePrepareXhrs.forEach((xhr) => xhr?.abort?.());
+            uploadState.activePrepareXhrs = [];
 
             if (!keepCancelFlag) {
-                cancelRequested = false;
+                uploadState.cancelRequested = false;
             }
 
             clearUploadState();
             if (!keepSherpaProgress) {
-                activeDiarizationMonitorGeneration += 1;
+                uploadState.activeDiarizationMonitorGeneration += 1;
             }
             if (!keepSherpaProgress) {
                 resetSherpaProgress();
@@ -880,23 +489,23 @@ $(function () {
         };
 
         const syncUploadControls = () => {
-            const hasSession = Boolean(currentSessionId);
+            const hasSession = Boolean(uploadState.currentSessionId);
 
-            $queueButton.prop('disabled', uploadInFlight || uploadCancelling || !selectedFile || hasSession);
-            $pauseButton.prop('disabled', uploadCancelling || !uploadInFlight || !hasSession || pauseRequested);
-            $continueButton.prop('disabled', uploadInFlight || uploadCancelling || !hasSession || !hasUnfinishedSections());
-            $retryButton.prop('disabled', uploadInFlight || uploadCancelling || !hasSession || !hasRetryableSections());
-            $cancelButton.prop('disabled', uploadCancelling || (!uploadInFlight && !hasUploadProgress()));
-            $categoryInput.prop('disabled', uploadInFlight && !uploadCancelling);
-            $languageInput.prop('disabled', uploadInFlight && !uploadCancelling);
+            $queueButton.prop('disabled', uploadState.uploadInFlight || uploadState.uploadCancelling || !uploadState.selectedFile || hasSession);
+            $pauseButton.prop('disabled', uploadState.uploadCancelling || !uploadState.uploadInFlight || !hasSession || uploadState.pauseRequested);
+            $continueButton.prop('disabled', uploadState.uploadInFlight || uploadState.uploadCancelling || !hasSession || !hasUnfinishedSections());
+            $retryButton.prop('disabled', uploadState.uploadInFlight || uploadState.uploadCancelling || !hasSession || !hasRetryableSections());
+            $cancelButton.prop('disabled', uploadState.uploadCancelling || (!uploadState.uploadInFlight && !hasUploadProgress()));
+            $categoryInput.prop('disabled', uploadState.uploadInFlight && !uploadState.uploadCancelling);
+            $languageInput.prop('disabled', uploadState.uploadInFlight && !uploadState.uploadCancelling);
         };
 
         const showUploadCancellingState = () => {
-            uploadCancelling = true;
-            uploadInFlight = false;
+            uploadState.uploadCancelling = true;
+            uploadState.uploadInFlight = false;
             $status.text('Cancelling');
             $status.attr('title', 'Cancelling active upload work and clearing pending sections.');
-            preparedSections = preparedSections.map((section) => section.status === 'Complete'
+            uploadState.preparedSections = uploadState.preparedSections.map((section) => section.status === 'Complete'
                 ? section
                 : {
                     ...section,
@@ -935,7 +544,7 @@ $(function () {
                 return [];
             }
 
-            return uploadStoredItems
+            return uploadState.uploadStoredItems
                 .filter((item) => String(item.categoryName || '').toLowerCase() === selectedCategory)
                 .filter(hasUsefulUploadTranscript)
                 .sort((first, second) => {
@@ -955,7 +564,7 @@ $(function () {
                 return;
             }
 
-            uploadStoredItems = [
+            uploadState.uploadStoredItems = [
                 ...uploadStoredItems.filter((entry) => String(entry.id) !== String(normalized.id)),
                 normalized,
             ];
@@ -973,14 +582,14 @@ $(function () {
             return uniqueIds;
         };
 
-        const monitorQueuedDiarization = (audioChunkIds, attemptsRemaining = 450, generation = activeDiarizationMonitorGeneration) => {
-            if (generation !== activeDiarizationMonitorGeneration) {
+        const monitorQueuedDiarization = (audioChunkIds, attemptsRemaining = 450, generation = uploadState.activeDiarizationMonitorGeneration) => {
+            if (generation !== uploadState.activeDiarizationMonitorGeneration) {
                 return;
             }
 
             const pendingIds = [...new Set(audioChunkIds.map((id) => Number(id)).filter((id) => id > 0))];
 
-            if (!storedUrl || !pendingIds.length || attemptsRemaining <= 0) {
+            if (!audioChunkStatusUrl || !pendingIds.length || attemptsRemaining <= 0) {
                 if (pendingIds.length && attemptsRemaining <= 0) {
                     renderSherpaProgress(0, pendingIds.length, { status: 'Timed out' });
                 }
@@ -992,13 +601,13 @@ $(function () {
             }
 
             window.setTimeout(() => {
-                if (generation !== activeDiarizationMonitorGeneration) {
+                if (generation !== uploadState.activeDiarizationMonitorGeneration) {
                     return;
                 }
 
-                $.getJSON(storedUrl)
+                $.getJSON(audioChunkStatusUrl, { ids: pendingIds })
                     .done((response) => {
-                        if (generation !== activeDiarizationMonitorGeneration) {
+                        if (generation !== uploadState.activeDiarizationMonitorGeneration) {
                             return;
                         }
 
@@ -1035,7 +644,7 @@ $(function () {
                         }
                     })
                     .fail(() => {
-                        if (generation !== activeDiarizationMonitorGeneration) {
+                        if (generation !== uploadState.activeDiarizationMonitorGeneration) {
                             return;
                         }
 
@@ -1052,16 +661,16 @@ $(function () {
         const restartQueuedDiarizationMonitor = (queuedIds) => {
             const uniqueIds = showQueuedDiarizationProgress(queuedIds);
 
-            if (!uniqueIds.length || !storedUrl) {
+            if (!uniqueIds.length || !audioChunkStatusUrl) {
                 return;
             }
 
-            activeDiarizationMonitorGeneration += 1;
-            monitorQueuedDiarization(uniqueIds, 450, activeDiarizationMonitorGeneration);
+            uploadState.activeDiarizationMonitorGeneration += 1;
+            monitorQueuedDiarization(uniqueIds, 450, uploadState.activeDiarizationMonitorGeneration);
         };
 
         const syncUploadCategoriesFromStoredItems = () => {
-            uploadCategories = [...new Set(uploadStoredItems
+            uploadState.uploadCategories = [...new Set(uploadState.uploadStoredItems
                 .map((item) => String(item.categoryName || '').trim())
                 .filter(Boolean))]
                 .sort((first, second) => first.localeCompare(second));
@@ -1080,29 +689,29 @@ $(function () {
         };
 
         const stopActiveUploadAudio = () => {
-            if (!activeUploadAudio) {
+            if (!uploadState.activeUploadAudio) {
                 return;
             }
 
-            const itemId = activeUploadAudioId;
-            activeUploadAudio.pause();
-            activeUploadAudio.currentTime = 0;
+            const itemId = uploadState.activeUploadAudioId;
+            uploadState.activeUploadAudio.pause();
+            uploadState.activeUploadAudio.currentTime = 0;
 
             if (itemId) {
                 setUploadStoredItemPlaybackState(itemId, false);
             }
 
-            activeUploadAudio = null;
-            activeUploadAudioId = null;
+            uploadState.activeUploadAudio = null;
+            uploadState.activeUploadAudioId = null;
         };
 
         const playUploadStoredItem = (item) => {
-            if (activeUploadAudioId === item.id && activeUploadAudio) {
-                if (activeUploadAudio.paused) {
-                    activeUploadAudio.play();
+            if (uploadState.activeUploadAudioId === item.id && uploadState.activeUploadAudio) {
+                if (uploadState.activeUploadAudio.paused) {
+                    uploadState.activeUploadAudio.play();
                     setUploadStoredItemPlaybackState(item.id, true);
                 } else {
-                    activeUploadAudio.pause();
+                    uploadState.activeUploadAudio.pause();
                     setUploadStoredItemPlaybackState(item.id, false);
                 }
 
@@ -1111,22 +720,22 @@ $(function () {
 
             stopActiveUploadAudio();
 
-            activeUploadAudio = new Audio(item.playUrl);
-            activeUploadAudio.preload = 'metadata';
-            activeUploadAudioId = item.id;
+            uploadState.activeUploadAudio = new Audio(item.playUrl);
+            uploadState.activeUploadAudio.preload = 'metadata';
+            uploadState.activeUploadAudioId = item.id;
 
-            activeUploadAudio.addEventListener('ended', () => {
+            uploadState.activeUploadAudio.addEventListener('ended', () => {
                 setUploadStoredItemPlaybackState(item.id, false);
-                activeUploadAudio = null;
-                activeUploadAudioId = null;
+                uploadState.activeUploadAudio = null;
+                uploadState.activeUploadAudioId = null;
             });
-            activeUploadAudio.addEventListener('pause', () => {
-                if (activeUploadAudioId === item.id && activeUploadAudio?.paused) {
+            uploadState.activeUploadAudio.addEventListener('pause', () => {
+                if (uploadState.activeUploadAudioId === item.id && uploadState.activeUploadAudio?.paused) {
                     setUploadStoredItemPlaybackState(item.id, false);
                 }
             });
 
-            activeUploadAudio.play();
+            uploadState.activeUploadAudio.play();
             setUploadStoredItemPlaybackState(item.id, true);
         };
 
@@ -1136,7 +745,7 @@ $(function () {
                 return;
             }
 
-            if (activeUploadAudioId === item.id) {
+            if (uploadState.activeUploadAudioId === item.id) {
                 stopActiveUploadAudio();
             }
 
@@ -1144,8 +753,8 @@ $(function () {
                 url: item.deleteUrl,
                 method: 'DELETE',
                 success: () => {
-                    uploadStoredItems = uploadStoredItems.filter((entry) => String(entry.id) !== String(item.id));
-                    cleanedSections = cleanedSections.filter((section) => String(section.audioChunkId) !== String(item.id));
+                    uploadState.uploadStoredItems = uploadState.uploadStoredItems.filter((entry) => String(entry.id) !== String(item.id));
+                    uploadState.cleanedSections = uploadState.cleanedSections.filter((section) => String(section.audioChunkId) !== String(item.id));
                     syncUploadCategoriesFromStoredItems();
                     renderTranscript();
                     updateCleanerProgress();
@@ -1182,38 +791,38 @@ $(function () {
 
         const updateCleanerProgress = () => {
             const total = getCleanerBatchCount();
-            const cleanedCount = cleanedSections.length;
+            const cleanedCount = uploadState.cleanedSections.length;
             const rawCount = getUploadStoredItemsForCategory().length;
             const hasCleanedCategory = hasCleanedUploadTranscriptForCategory(getUploadCategory());
             const isComplete = total > 0 && hasCleanedCategory && cleanedCount >= rawCount;
             const done = isComplete ? total : 0;
-            const activeDone = cleanerStatus === 'Polishing' ? cleanerCompletedBatches : done;
+            const activeDone = uploadState.cleanerStatus === 'Polishing' ? uploadState.cleanerCompletedBatches : done;
             const percent = total > 0 ? Math.min(100, Math.round((activeDone / total) * 100)) : 0;
 
-            if ((total === 0 || !hasCleanedCategory) && cleanerStatus !== 'Polishing') {
-                cleanerStatus = 'Waiting';
+            if ((total === 0 || !hasCleanedCategory) && uploadState.cleanerStatus !== 'Polishing') {
+                uploadState.cleanerStatus = 'Waiting';
             }
 
-            if (isComplete && cleanerStatus !== 'Polishing') {
-                cleanerStatus = 'Complete';
+            if (isComplete && uploadState.cleanerStatus !== 'Polishing') {
+                uploadState.cleanerStatus = 'Complete';
             }
 
-            $cleanerState.text(cleanerStatus);
-            $cleanerProgressLabel.text(`${cleanerStatus === 'Polishing' ? cleanerCompletedBatches : activeDone} / ${total} batches`);
+            $cleanerState.text(uploadState.cleanerStatus);
+            $cleanerProgressLabel.text(`${uploadState.cleanerStatus === 'Polishing' ? uploadState.cleanerCompletedBatches : activeDone} / ${total} batches`);
             $cleanerProgressPercent.text(`${percent}%`);
             $cleanerProgressBar.css('width', `${percent}%`);
 
-            if (cleanerStatus === 'Polishing') {
+            if (uploadState.cleanerStatus === 'Polishing') {
                 $cleanerProgressNote.text(`Polishing ${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch' : 'batches'}.`);
                 return;
             }
 
-            if (cleanerStatus === 'Complete') {
+            if (uploadState.cleanerStatus === 'Complete') {
                 $cleanerProgressNote.text(`${cleanedCount} cleaned ${cleanedCount === 1 ? 'section' : 'sections'} ready for export.`);
                 return;
             }
 
-            if (cleanerStatus === 'Failed') {
+            if (uploadState.cleanerStatus === 'Failed') {
                 $cleanerProgressNote.text('Polishing failed. You can polish the transcript again.');
                 return;
             }
@@ -1224,35 +833,35 @@ $(function () {
         };
 
         const renderSectionProgress = () => {
-            const total = preparedSections.length;
-            const complete = preparedSections.filter((section) => section.status === 'Complete').length;
-            const nextIndex = preparedSections.findIndex((section) => section.status !== 'Complete');
-            const position = activeSectionPosition || (nextIndex >= 0 ? nextIndex + 1 : total);
+            const total = uploadState.preparedSections.length;
+            const complete = uploadState.preparedSections.filter((section) => section.status === 'Complete').length;
+            const nextIndex = uploadState.preparedSections.findIndex((section) => section.status !== 'Complete');
+            const position = uploadState.activeSectionPosition || (nextIndex >= 0 ? nextIndex + 1 : total);
             const percent = total === 0
                 ? 0
-                : activeSectionPosition > 0
-                    ? activeSectionProgress
+                : uploadState.activeSectionPosition > 0
+                    ? uploadState.activeSectionProgress
                     : complete === total
                         ? 100
                         : 0;
-            const activeUnits = activeBatchPositions.length > 0
-                ? activeBatchPositions.length
-                : (activeSectionPosition > 0 ? 1 : 0);
+            const activeUnits = uploadState.activeBatchPositions.length > 0
+                ? uploadState.activeBatchPositions.length
+                : (uploadState.activeSectionPosition > 0 ? 1 : 0);
             const transcribePercent = total === 0
                 ? 0
                 : Math.round(((complete + (activeUnits * (percent / 100))) / total) * 100);
-            const progressIndex = activeBatchPositions.length > 0
+            const progressIndex = uploadState.activeBatchPositions.length > 0
                 ? Math.min(
-                    activeBatchPositions.length - 1,
-                    Math.floor((Math.max(0, percent) / 100) * activeBatchPositions.length),
+                    uploadState.activeBatchPositions.length - 1,
+                    Math.floor((Math.max(0, percent) / 100) * uploadState.activeBatchPositions.length),
                 )
                 : -1;
             const activeLabel = progressIndex >= 0
-                ? `Processing ${activeBatchPositions[progressIndex]} of ${total}`
+                ? `Processing ${uploadState.activeBatchPositions[progressIndex]} of ${total}`
                 : '';
 
-            if (activeUploadPhaseProgress) {
-                activeUploadPhaseProgress = {
+            if (uploadState.activeUploadPhaseProgress) {
+                uploadState.activeUploadPhaseProgress = {
                     ...activeUploadPhaseProgress,
                     transcribe: clampProgressPercent(transcribePercent),
                 };
@@ -1263,78 +872,78 @@ $(function () {
             $progressPercent.text(`${percent}%`);
             $progress.css('width', `${percent}%`);
 
-            if (activeBatchPositions.length > 0) {
+            if (uploadState.activeBatchPositions.length > 0) {
                 $status.text(activeLabel);
             }
         };
 
         const stopSectionProgress = () => {
-            if (activeSectionProgressTimer) {
-                window.clearInterval(activeSectionProgressTimer);
-                activeSectionProgressTimer = null;
+            if (uploadState.activeSectionProgressTimer) {
+                window.clearInterval(uploadState.activeSectionProgressTimer);
+                uploadState.activeSectionProgressTimer = null;
             }
 
-            clearWhisperProgress(activeSectionProgressId);
-            activeSectionProgressId = '';
+            clearWhisperProgress(uploadState.activeSectionProgressId);
+            uploadState.activeSectionProgressId = '';
 
-            activeSectionPosition = 0;
-            activeSectionProgress = 0;
-            activeBatchPositions = [];
+            uploadState.activeSectionPosition = 0;
+            uploadState.activeSectionProgress = 0;
+            uploadState.activeBatchPositions = [];
         };
 
         const beginSectionProgress = (position, progressId = '', offline = false) => {
             stopSectionProgress();
-            activeSectionPosition = position;
-            activeSectionProgress = 0;
-            activeSectionProgressId = progressId;
+            uploadState.activeSectionPosition = position;
+            uploadState.activeSectionProgress = 0;
+            uploadState.activeSectionProgressId = progressId;
             renderSectionProgress();
 
             if (offline && progressId) {
                 $status.text('Preparing offline audio');
                 registerWhisperProgress(progressId, (whisperPercent) => {
-                    if (activeSectionProgressTimer) {
-                        window.clearInterval(activeSectionProgressTimer);
-                        activeSectionProgressTimer = null;
+                    if (uploadState.activeSectionProgressTimer) {
+                        window.clearInterval(uploadState.activeSectionProgressTimer);
+                        uploadState.activeSectionProgressTimer = null;
                     }
 
-                    activeSectionProgress = Math.round(whisperPercent);
+                    uploadState.activeSectionProgress = Math.round(whisperPercent);
                     $status.text(whisperPercent >= 100
                         ? 'Separating speakers'
                         : `Whisper ${Math.round(whisperPercent)}%`);
                     renderSectionProgress();
                 });
-                activeSectionProgressTimer = window.setInterval(() => {
-                    activeSectionProgress = Math.min(8, activeSectionProgress + 1);
+                uploadState.activeSectionProgressTimer = window.setInterval(() => {
+                    uploadState.activeSectionProgress = Math.min(8, uploadState.activeSectionProgress + 1);
                     renderSectionProgress();
                 }, 500);
                 return;
             }
 
-            activeSectionProgressTimer = window.setInterval(() => {
-                const remaining = 98 - activeSectionProgress;
-                activeSectionProgress = Math.min(98, activeSectionProgress + Math.max(1, Math.ceil(remaining * 0.08)));
+            uploadState.activeSectionProgressTimer = window.setInterval(() => {
+                const remaining = 98 - uploadState.activeSectionProgress;
+                uploadState.activeSectionProgress = Math.min(98, uploadState.activeSectionProgress + Math.max(1, Math.ceil(remaining * 0.08)));
                 renderSectionProgress();
             }, 350);
         };
 
         const completeSectionProgress = async () => {
-            if (activeSectionProgressTimer) {
-                window.clearInterval(activeSectionProgressTimer);
-                activeSectionProgressTimer = null;
+            if (uploadState.activeSectionProgressTimer) {
+                window.clearInterval(uploadState.activeSectionProgressTimer);
+                uploadState.activeSectionProgressTimer = null;
             }
 
-            clearWhisperProgress(activeSectionProgressId);
-            activeSectionProgressId = '';
+            clearWhisperProgress(uploadState.activeSectionProgressId);
+            uploadState.activeSectionProgressId = '';
 
-            activeSectionProgress = 100;
+            uploadState.activeSectionProgress = 100;
             renderSectionProgress();
             await pause(150);
-            activeSectionPosition = 0;
-            activeSectionProgress = 0;
+            uploadState.activeSectionPosition = 0;
+            uploadState.activeSectionProgress = 0;
         };
 
         const updateProgress = () => {
-            const visible = preparedSections.filter((section) => section.status !== 'Complete').length;
+            const visible = uploadState.preparedSections.filter((section) => section.status !== 'Complete').length;
 
             $activeCount.text(String(visible));
             renderSectionProgress();
@@ -1349,7 +958,7 @@ $(function () {
             const rawItems = getUploadStoredItemsForCategory();
             const completed = useCleaned
                 ? (hasCleanedUploadTranscriptForCategory(selectedCategory)
-                    ? cleanedSections.filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || ''))
+                    ? uploadState.cleanedSections.filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || ''))
                     : [])
                 : rawItems;
 
@@ -1420,8 +1029,8 @@ $(function () {
                 `;
             }).join(''));
 
-            if (activeUploadAudioId) {
-                setUploadStoredItemPlaybackState(activeUploadAudioId, true);
+            if (uploadState.activeUploadAudioId) {
+                setUploadStoredItemPlaybackState(uploadState.activeUploadAudioId, true);
             }
         };
 
@@ -1432,7 +1041,7 @@ $(function () {
             const useCleaned = exportMode === 'clean';
             const completed = useCleaned
                 ? (hasCleanedUploadTranscriptForCategory(selectedCategory)
-                    ? cleanedSections.filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || ''))
+                    ? uploadState.cleanedSections.filter((section) => hasUsefulTranscriptText(section.cleanText || section.clean_text || ''))
                     : [])
                 : getUploadStoredItemsForCategory();
 
@@ -1453,14 +1062,14 @@ $(function () {
             await withButtonLoading($(event?.currentTarget || []), () => exportTranscriptRows({
                 rows,
                 format: exportFormat,
-                filenameBase: `${slugify(selectedCategory || selectedFile?.name)}-${useCleaned ? 'cleaned' : 'raw'}-transcription`,
-                title: selectedCategory || selectedFile?.name || 'Upload audio',
+                filenameBase: `${slugify(selectedCategory || uploadState.selectedFile?.name)}-${useCleaned ? 'cleaned' : 'raw'}-transcription`,
+                title: selectedCategory || uploadState.selectedFile?.name || 'Upload audio',
                 variantLabel: useCleaned ? 'Cleaned' : 'Raw',
             }));
         };
 
         const renderVadLogs = (logs, categoryName) => {
-            uploadShowingVadLogs = true;
+            uploadState.uploadShowingVadLogs = true;
             $transcriptBadge.text(String(logs.length));
 
             if (!logs.length) {
@@ -1507,7 +1116,7 @@ $(function () {
         };
 
         const setUploadLogButtonLabel = () => {
-            $logButton.prop('disabled', false).html(uploadShowingVadLogs ? `
+            $logButton.prop('disabled', false).html(uploadState.uploadShowingVadLogs ? `
                 <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path d="M15 18l-6-6 6-6" />
                 </svg>
@@ -1526,8 +1135,8 @@ $(function () {
         };
 
         const loadVadLogs = () => {
-            if (uploadShowingVadLogs) {
-                uploadShowingVadLogs = false;
+            if (uploadState.uploadShowingVadLogs) {
+                uploadState.uploadShowingVadLogs = false;
                 setUploadLogButtonLabel();
                 renderTranscript();
                 return;
@@ -1564,7 +1173,7 @@ $(function () {
         };
 
         const mergeCleanedRows = (rows) => {
-            const existing = new Map(cleanedSections.map((section) => [String(section.audioChunkId), section]));
+            const existing = new Map(uploadState.cleanedSections.map((section) => [String(section.audioChunkId), section]));
 
             rows.forEach((row) => {
                 existing.set(String(row.audio_chunk_id), {
@@ -1575,7 +1184,7 @@ $(function () {
                 });
             });
 
-            cleanedSections = Array.from(existing.values())
+            uploadState.cleanedSections = Array.from(existing.values())
                 .sort((first, second) => Number(first.audioChunkId || 0) - Number(second.audioChunkId || 0));
         };
 
@@ -1592,7 +1201,7 @@ $(function () {
                 return;
             }
 
-            if (furnishInFlight || !furnishUrl) {
+            if (uploadState.furnishInFlight || !furnishUrl) {
                 return;
             }
 
@@ -1602,10 +1211,10 @@ $(function () {
                 return;
             }
 
-            furnishInFlight = true;
-            cleanerStatus = 'Polishing';
-            cleanerCompletedBatches = 0;
-            uploadCleanedCategoryName = categoryName;
+            uploadState.furnishInFlight = true;
+            uploadState.cleanerStatus = 'Polishing';
+            uploadState.cleanerCompletedBatches = 0;
+            uploadState.uploadCleanedCategoryName = categoryName;
             $furnishButton.prop('disabled', true).text('Polishing');
             renderTranscript();
             updateCleanerProgress();
@@ -1629,7 +1238,7 @@ $(function () {
                     const rows = Array.isArray(response?.data) ? response.data : [];
 
                     mergeCleanedRows(rows);
-                    cleanerCompletedBatches = batchIndex + 1;
+                    uploadState.cleanerCompletedBatches = batchIndex + 1;
                     updateCleanerProgress();
                     renderTranscript();
 
@@ -1638,27 +1247,27 @@ $(function () {
                     }
                 }
 
-                cleanerStatus = 'Complete';
+                uploadState.cleanerStatus = 'Complete';
                 updateCleanerProgress();
                 renderTranscript();
                 notify('Transcript polished.');
             } catch (xhr) {
-                cleanerStatus = 'Failed';
+                uploadState.cleanerStatus = 'Failed';
                 updateCleanerProgress();
                 notifyError(String(xhr?.responseJSON?.message || 'Transcript could not be polished.'));
             } finally {
-                furnishInFlight = false;
+                uploadState.furnishInFlight = false;
                 $furnishButton.prop('disabled', false).text('Polish');
             }
         };
 
         const renderQueue = () => {
-            const visibleSections = preparedSections.filter((section) => section.status !== 'Complete');
+            const visibleSections = uploadState.preparedSections.filter((section) => section.status !== 'Complete');
 
             if (!visibleSections.length) {
-                const message = preparedSections.some((section) => section.status === 'Complete')
+                const message = uploadState.preparedSections.some((section) => section.status === 'Complete')
                     ? 'No pending recordings yet.'
-                    : selectedFile ? 'No pending recordings yet.' : undefined;
+                    : uploadState.selectedFile ? 'No pending recordings yet.' : undefined;
                 renderEmptyQueue(message);
                 updateProgress();
                 renderTranscript();
@@ -1685,12 +1294,12 @@ $(function () {
         };
 
         const buildSections = () => {
-            if (!selectedFile) {
+            if (!uploadState.selectedFile) {
                 return [];
             }
 
             const chunkLengthMs = getChunkLengthMs();
-            const durationMs = selectedDurationMs > 0 ? selectedDurationMs : chunkLengthMs;
+            const durationMs = uploadState.selectedDurationMs > 0 ? uploadState.selectedDurationMs : chunkLengthMs;
             const count = Math.max(1, Math.ceil(durationMs / chunkLengthMs));
 
             return Array.from({ length: count }, (_, index) => {
@@ -1709,15 +1318,15 @@ $(function () {
         };
 
         const syncPlan = () => {
-            const durationMs = selectedDurationMs > 0 ? selectedDurationMs : 0;
+            const durationMs = uploadState.selectedDurationMs > 0 ? uploadState.selectedDurationMs : 0;
 
             $duration.text(durationMs > 0 ? formatClock(durationMs) : '--:--');
-            $status.text(selectedFile ? 'Ready' : 'Ready');
-            $queueButton.prop('disabled', uploadInFlight || !selectedFile);
+            $status.text(uploadState.selectedFile ? 'Ready' : 'Ready');
+            $queueButton.prop('disabled', uploadState.uploadInFlight || !uploadState.selectedFile);
             syncUploadControls();
         };
 
-        const syncUploadCategoryOptions = () => [...new Set(uploadCategories.filter(Boolean))];
+        const syncUploadCategoryOptions = () => [...new Set(uploadState.uploadCategories.filter(Boolean))];
 
         const renderUploadCategorySuggestions = () => {
             const categories = syncUploadCategoryOptions();
@@ -1762,18 +1371,18 @@ $(function () {
         const rememberUploadCategory = (categoryName) => {
             const category = String(categoryName || '').trim();
 
-            if (!category || uploadCategories.some((item) => item.toLowerCase() === category.toLowerCase())) {
+            if (!category || uploadState.uploadCategories.some((item) => item.toLowerCase() === category.toLowerCase())) {
                 return;
             }
 
-            uploadCategories = [...uploadCategories, category].sort((first, second) => first.localeCompare(second));
+            uploadState.uploadCategories = [...uploadState.uploadCategories, category].sort((first, second) => first.localeCompare(second));
             refreshUploadCategorySuggestions();
         };
 
         const loadUploadCategories = () => {
             if (!storedUrl) {
-                uploadCategories = [];
-                uploadStoredItems = [];
+                uploadState.uploadCategories = [];
+                uploadState.uploadStoredItems = [];
                 renderTranscript();
                 return;
             }
@@ -1781,7 +1390,7 @@ $(function () {
             $.getJSON(storedUrl)
                 .done((response) => {
                     const items = Array.isArray(response?.data) ? response.data : [];
-                    uploadStoredItems = items
+                    uploadState.uploadStoredItems = items
                         .map(normalizeUploadStoredItem)
                         .filter((item) => item.sourceType === 'upload')
                         .filter(hasUsefulUploadTranscript);
@@ -1790,42 +1399,23 @@ $(function () {
                     refreshUploadCategorySuggestions();
                 })
                 .fail(() => {
-                    uploadCategories = [];
-                    uploadStoredItems = [];
+                    uploadState.uploadCategories = [];
+                    uploadState.uploadStoredItems = [];
                     renderTranscript();
                     refreshUploadCategorySuggestions();
                 });
         };
 
         const setProcessingState = (isProcessing) => {
-            uploadInFlight = isProcessing;
+            uploadState.uploadInFlight = isProcessing;
             if (isProcessing) {
-                uploadCancelling = false;
+                uploadState.uploadCancelling = false;
             }
             if (isProcessing) {
                 resetSherpaProgress();
             }
-            $status.text(isProcessing ? 'Processing' : selectedFile ? 'Ready' : 'Ready');
+            $status.text(isProcessing ? 'Processing' : uploadState.selectedFile ? 'Ready' : 'Ready');
             syncUploadControls();
-        };
-
-        const buildUploadErrorMessage = (xhr) => {
-            const serverMessage = String(xhr?.responseJSON?.message || '').trim();
-            const fieldErrors = xhr?.responseJSON?.errors || {};
-
-            if (fieldErrors.category_name?.length) {
-                return 'Choose a project name before processing the upload.';
-            }
-
-            if (fieldErrors.audio_file?.length) {
-                return 'Choose a valid audio file before processing.';
-            }
-
-            if (serverMessage) {
-                return serverMessage;
-            }
-
-            return 'Audio upload could not be processed.';
         };
 
         const buildUploadSectionFormData = (sessionId, categoryName, section, options = {}) => {
@@ -1855,7 +1445,7 @@ $(function () {
                 return true;
             }
 
-            const candidates = preparedSections
+            const candidates = uploadState.preparedSections
                 .map((section, index) => ({ section, index }))
                 .filter(({ section }) => !section.prepared && section.status !== 'Complete');
             const total = candidates.length;
@@ -1873,7 +1463,7 @@ $(function () {
 
             if (uploadPrepareBatchUrl) {
                 candidates.forEach(({ index }) => {
-                    preparedSections[index] = {
+                    uploadState.preparedSections[index] = {
                         ...preparedSections[index],
                         status: 'Preparing',
                         preparedMeta: 'Preparing audio',
@@ -1883,7 +1473,7 @@ $(function () {
 
                 try {
                     for (let offset = 0; offset < candidates.length; offset += concurrency) {
-                        if (cancelRequested) {
+                        if (uploadState.cancelRequested) {
                             return false;
                         }
 
@@ -1907,7 +1497,7 @@ $(function () {
                             }),
                             contentType: 'application/json',
                         });
-                        activePrepareXhrs.push(xhr);
+                        uploadState.activePrepareXhrs.push(xhr);
 
                         try {
                             const response = await xhr;
@@ -1922,7 +1512,7 @@ $(function () {
                                 const skipped = Boolean(data.skipped || data.prepared_skipped);
                                 const audioChunkId = Number(data.audio_chunk_id || 0);
                                 completed += 1;
-                                preparedSections[index] = {
+                                uploadState.preparedSections[index] = {
                                     ...preparedSections[index],
                                     prepared: true,
                                     noSpeech: skipped,
@@ -1940,18 +1530,18 @@ $(function () {
                             markUploadPrepareProgress(completed, total);
                             renderQueue();
                         } finally {
-                            activePrepareXhrs = activePrepareXhrs.filter((item) => item !== xhr);
+                            uploadState.activePrepareXhrs = uploadState.activePrepareXhrs.filter((item) => item !== xhr);
                         }
                     }
                     return true;
                 } catch (xhr) {
-                    if (cancelRequested || xhr?.statusText === 'abort') {
+                    if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                         return false;
                     }
 
                     candidates.forEach(({ index }) => {
-                        if (preparedSections[index]?.status === 'Preparing') {
-                            preparedSections[index] = {
+                        if (uploadState.preparedSections[index]?.status === 'Preparing') {
+                            uploadState.preparedSections[index] = {
                                 ...preparedSections[index],
                                 status: 'Failed',
                                 preparedMeta: 'Audio preparation failed',
@@ -1960,17 +1550,17 @@ $(function () {
                     });
                     $status.text('Failed');
                     renderQueue();
-                    notifyError(buildUploadErrorMessage(xhr));
+                    notifyError(buildUploadSessionErrorMessage(xhr));
                     return false;
                 }
             }
 
             const runNext = async () => {
-                while (!failed && !cancelRequested && cursor < candidates.length) {
+                while (!failed && !uploadState.cancelRequested && cursor < candidates.length) {
                     const { section, index } = candidates[cursor];
                     cursor += 1;
 
-                    preparedSections[index] = {
+                    uploadState.preparedSections[index] = {
                         ...preparedSections[index],
                         status: 'Preparing',
                         preparedMeta: 'Preparing audio',
@@ -1986,7 +1576,7 @@ $(function () {
                         processData: false,
                         contentType: false,
                     });
-                    activePrepareXhrs.push(xhr);
+                    uploadState.activePrepareXhrs.push(xhr);
 
                     try {
                         const response = await xhr;
@@ -1994,7 +1584,7 @@ $(function () {
                         const skipped = Boolean(data.skipped || data.prepared_skipped);
                         const audioChunkId = Number(data.audio_chunk_id || 0);
                         completed += 1;
-                        preparedSections[index] = {
+                        uploadState.preparedSections[index] = {
                             ...preparedSections[index],
                             prepared: true,
                             noSpeech: skipped,
@@ -2010,29 +1600,29 @@ $(function () {
                         markUploadPrepareProgress(completed, total);
                         renderQueue();
                     } catch (xhr) {
-                        if (cancelRequested || xhr?.statusText === 'abort') {
+                        if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                             failed = true;
                             return;
                         }
 
                         failed = true;
-                        preparedSections[index] = {
+                        uploadState.preparedSections[index] = {
                             ...preparedSections[index],
                             status: 'Failed',
                             preparedMeta: 'Audio preparation failed',
                         };
                         $status.text('Failed');
                         renderQueue();
-                        notifyError(buildUploadErrorMessage(xhr));
+                        notifyError(buildUploadSessionErrorMessage(xhr));
                     } finally {
-                        activePrepareXhrs = activePrepareXhrs.filter((item) => item !== xhr);
+                        uploadState.activePrepareXhrs = uploadState.activePrepareXhrs.filter((item) => item !== xhr);
                     }
                 }
             };
 
             await Promise.all(Array.from({ length: concurrency }, () => runNext()));
 
-            return !failed && !cancelRequested;
+            return !failed && !uploadState.cancelRequested;
         };
 
         const startPreparedUploadDiarization = async (sessionId) => {
@@ -2040,7 +1630,7 @@ $(function () {
                 return [];
             }
 
-            const sections = preparedSections
+            const sections = uploadState.preparedSections
                 .map((section) => ({
                     audio_chunk_id: Number(section.audioChunkId || 0),
                     prepared_name: section.preparedName || '',
@@ -2078,7 +1668,7 @@ $(function () {
                 const queuedByClipIndex = new Map(queuedRows
                     .map((row) => [Number(row?.clip_index || 0), Number(row?.audio_chunk_id || 0)])
                     .filter(([, audioChunkId]) => audioChunkId > 0));
-                preparedSections = preparedSections.map((section) => {
+                uploadState.preparedSections = uploadState.preparedSections.map((section) => {
                     const audioChunkId = queuedByClipIndex.get(Number(section.index)) || Number(section.audioChunkId || 0);
 
                     return audioChunkId > 0 && queuedSet.has(audioChunkId)
@@ -2092,26 +1682,26 @@ $(function () {
         };
 
         const processUploadSections = async (sessionId, categoryName) => {
-            cancelRequested = false;
-            pauseRequested = false;
-            const queuedDiarizationIds = preparedSections
+            uploadState.cancelRequested = false;
+            uploadState.pauseRequested = false;
+            const queuedDiarizationIds = uploadState.preparedSections
                 .filter((section) => section.diarizationQueued && Number(section.audioChunkId || 0) > 0)
                 .map((section) => Number(section.audioChunkId));
 
             if (!audioChunkUrl) {
-                preparedSections = preparedSections.map((section) => ({
+                uploadState.preparedSections = uploadState.preparedSections.map((section) => ({
                     ...section,
                     status: 'Failed',
                 }));
                 $status.text('Failed');
                 renderQueue();
                 notifyError('Audio section endpoint is missing. Refresh the page and try again.');
-                uploadInFlight = false;
+                uploadState.uploadInFlight = false;
                 syncUploadControls();
                 return;
             }
 
-            if (!activeUploadPhaseProgress) {
+            if (!uploadState.activeUploadPhaseProgress) {
                 beginUploadPhaseProgress('Processing');
             }
             updateUploadPhaseProgress({
@@ -2134,8 +1724,8 @@ $(function () {
             const completeBatchRows = async (batch, rows) => {
                 await completeSectionProgress();
 
-                if (cancelRequested) {
-                    activeSectionXhr = null;
+                if (uploadState.cancelRequested) {
+                    uploadState.activeSectionXhr = null;
                     resetUploadProgress();
                     return false;
                 }
@@ -2149,7 +1739,7 @@ $(function () {
                     if (row.status === 'diarization_queued' && Number(row.id || 0) > 0) {
                         queuedDiarizationIds.push(Number(row.id));
                     }
-                    preparedSections[index] = {
+                    uploadState.preparedSections[index] = {
                         ...section,
                         status: 'Complete',
                         text: row.translated_text || '',
@@ -2162,7 +1752,7 @@ $(function () {
 
                 restartQueuedDiarizationMonitor(queuedDiarizationIds);
                 rememberUploadCategory(categoryName);
-                activeSectionXhr = null;
+                uploadState.activeSectionXhr = null;
                 renderQueue();
                 renderTranscript();
                 saveUploadState();
@@ -2172,12 +1762,12 @@ $(function () {
             if (audioChunkBatchUrl && getTranscriptionEngine() === 'online') {
                 let index = 0;
 
-                while (index < preparedSections.length) {
-                    if (cancelRequested || pauseRequested) {
+                while (index < uploadState.preparedSections.length) {
+                    if (uploadState.cancelRequested || uploadState.pauseRequested) {
                         break;
                     }
 
-                    if (preparedSections[index].status === 'Complete') {
+                    if (uploadState.preparedSections[index].status === 'Complete') {
                         index += 1;
                         continue;
                     }
@@ -2185,8 +1775,8 @@ $(function () {
                     const batch = [];
                     let batchDurationMs = 0;
 
-                    while (index < preparedSections.length && batch.length < maxTranscribeBatchClips) {
-                        const section = preparedSections[index];
+                    while (index < uploadState.preparedSections.length && batch.length < maxTranscribeBatchClips) {
+                        const section = uploadState.preparedSections[index];
 
                         if (section.status === 'Complete') {
                             index += 1;
@@ -2200,7 +1790,7 @@ $(function () {
                             $status.text('Failed');
                             renderQueue();
                             notifyError('Audio is too big.');
-                            uploadInFlight = false;
+                            uploadState.uploadInFlight = false;
                             syncUploadControls();
                             return;
                         }
@@ -2219,21 +1809,21 @@ $(function () {
                     }
 
                     batch.forEach(({ index: sectionIndex }) => {
-                        preparedSections[sectionIndex].status = 'Processing';
+                        uploadState.preparedSections[sectionIndex].status = 'Processing';
                     });
 
                     const positions = batch.map(({ index: sectionIndex }) => sectionIndex + 1);
                     const firstPosition = positions[0];
                     const lastPosition = positions[positions.length - 1];
-                    $status.text(`Processing ${firstPosition} of ${preparedSections.length}`);
+                    $status.text(`Processing ${firstPosition} of ${uploadState.preparedSections.length}`);
 
                     beginSectionProgress(firstPosition, '', false);
-                    activeBatchPositions = positions;
+                    uploadState.activeBatchPositions = positions;
                     renderSectionProgress();
                     renderQueue();
 
                     try {
-                        activeSectionXhr = $.ajax({
+                        uploadState.activeSectionXhr = $.ajax({
                             url: audioChunkBatchUrl,
                             method: 'POST',
                             data: JSON.stringify({
@@ -2244,12 +1834,12 @@ $(function () {
                                 transcription_engine: getTranscriptionEngine(),
                                 whisper_model: getWhisperModel(),
                                 speaker_session_id: sessionId,
-                                finalize_session: lastPosition === preparedSections.length ? 1 : 0,
+                                finalize_session: lastPosition === uploadState.preparedSections.length ? 1 : 0,
                                 sections: batch.map(({ section }) => commonSectionPayload(section)),
                             }),
                             contentType: 'application/json',
                         });
-                        const response = await activeSectionXhr;
+                        const response = await uploadState.activeSectionXhr;
                         const rows = Array.isArray(response?.data)
                             ? response.data
                             : (response?.data ? [response.data] : []);
@@ -2258,42 +1848,42 @@ $(function () {
                             return;
                         }
                     } catch (xhr) {
-                        activeSectionXhr = null;
+                        uploadState.activeSectionXhr = null;
                         stopSectionProgress();
-                        if (cancelRequested || xhr?.statusText === 'abort') {
+                        if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                             resetUploadProgress();
                             return;
                         }
 
                         batch.forEach(({ index: sectionIndex }) => {
-                            preparedSections[sectionIndex].status = 'Failed';
+                            uploadState.preparedSections[sectionIndex].status = 'Failed';
                         });
                         $status.text('Failed');
                         renderQueue();
-                        notifyError(buildUploadErrorMessage(xhr));
-                        uploadInFlight = false;
+                        notifyError(buildUploadSessionErrorMessage(xhr));
+                        uploadState.uploadInFlight = false;
                         syncUploadControls();
                         return;
                     }
                 }
             } else {
-            for (let index = 0; index < preparedSections.length; index += 1) {
-                if (cancelRequested || pauseRequested) {
+            for (let index = 0; index < uploadState.preparedSections.length; index += 1) {
+                if (uploadState.cancelRequested || uploadState.pauseRequested) {
                     break;
                 }
 
-                if (preparedSections[index].status === 'Complete') {
+                if (uploadState.preparedSections[index].status === 'Complete') {
                     continue;
                 }
 
-                preparedSections[index].status = 'Processing';
-                $status.text(`Processing ${index + 1} of ${preparedSections.length}`);
+                uploadState.preparedSections[index].status = 'Processing';
+                $status.text(`Processing ${index + 1} of ${uploadState.preparedSections.length}`);
                 const offline = getTranscriptionEngine() === 'offline';
                 const progressId = offline ? createTranscriptionProgressId() : '';
-                beginSectionProgress(index + 1, progressId, offline && !preparedSections[index].preparedSkipped);
+                beginSectionProgress(index + 1, progressId, offline && !uploadState.preparedSections[index].preparedSkipped);
                 renderQueue();
 
-                const section = preparedSections[index];
+                const section = uploadState.preparedSections[index];
                 const formData = buildUploadSectionFormData(sessionId, categoryName, section);
                 formData.append('language_code', getUploadLanguageCode());
                 formData.append('transcription_engine', getTranscriptionEngine());
@@ -2306,30 +1896,30 @@ $(function () {
                 if (progressId) {
                     formData.append('progress_id', progressId);
                 }
-                formData.append('finalize_session', index === preparedSections.length - 1 ? '1' : '0');
+                formData.append('finalize_session', index === uploadState.preparedSections.length - 1 ? '1' : '0');
 
                 try {
-                    activeSectionXhr = $.ajax({
+                    uploadState.activeSectionXhr = $.ajax({
                         url: audioChunkUrl,
                         method: 'POST',
                         data: formData,
                         processData: false,
                         contentType: false,
                     });
-                    const response = await activeSectionXhr;
+                    const response = await uploadState.activeSectionXhr;
 
                     const chunk = response?.data || {};
                     rememberStoredUploadItem(chunk);
                     rememberUploadCategory(categoryName);
                     await completeSectionProgress();
 
-                    if (cancelRequested) {
-                        activeSectionXhr = null;
+                    if (uploadState.cancelRequested) {
+                        uploadState.activeSectionXhr = null;
                         resetUploadProgress();
                         return;
                     }
 
-                    preparedSections[index] = {
+                    uploadState.preparedSections[index] = {
                         ...section,
                         status: 'Complete',
                         text: chunk.translated_text || '',
@@ -2339,43 +1929,43 @@ $(function () {
                             : '',
                     };
                     if (getTranscriptionEngine() === 'offline') {
-                        const completedSections = preparedSections.filter((item) => item.status === 'Complete').length;
+                        const completedSections = uploadState.preparedSections.filter((item) => item.status === 'Complete').length;
                         markUploadSherpaProgress(
-                            preparedSections.length > 0
-                                ? Math.round((completedSections / preparedSections.length) * 100)
+                            uploadState.preparedSections.length > 0
+                                ? Math.round((completedSections / uploadState.preparedSections.length) * 100)
                                 : 100,
-                            `Processing ${Math.min(index + 1, preparedSections.length)} of ${preparedSections.length}`,
+                            `Processing ${Math.min(index + 1, uploadState.preparedSections.length)} of ${uploadState.preparedSections.length}`,
                         );
                     } else if (chunk.status === 'diarization_queued' && Number(chunk.id || 0) > 0) {
                         queuedDiarizationIds.push(Number(chunk.id));
                         restartQueuedDiarizationMonitor(queuedDiarizationIds);
                     }
-                    activeSectionXhr = null;
+                    uploadState.activeSectionXhr = null;
                     renderQueue();
                     renderTranscript();
                 } catch (xhr) {
-                    activeSectionXhr = null;
+                    uploadState.activeSectionXhr = null;
                     stopSectionProgress();
-                    if (cancelRequested || xhr?.statusText === 'abort') {
+                    if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                         resetUploadProgress();
                         return;
                     }
 
-                    preparedSections[index].status = 'Failed';
+                    uploadState.preparedSections[index].status = 'Failed';
                     $status.text('Failed');
                     renderQueue();
-                    notifyError(buildUploadErrorMessage(xhr));
-                    uploadInFlight = false;
+                    notifyError(buildUploadSessionErrorMessage(xhr));
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                     return;
                 }
             }
             }
 
-            const pausedWithWorkRemaining = pauseRequested && hasUnfinishedSections();
+            const pausedWithWorkRemaining = uploadState.pauseRequested && hasUnfinishedSections();
             stopSectionProgress();
 
-            if (cancelRequested) {
+            if (uploadState.cancelRequested) {
                 resetUploadProgress();
                 return;
             } else if (pausedWithWorkRemaining) {
@@ -2383,9 +1973,9 @@ $(function () {
             } else {
                 $status.text('Complete');
             }
-            uploadInFlight = false;
+            uploadState.uploadInFlight = false;
             syncUploadControls();
-            if (!cancelRequested && !pausedWithWorkRemaining) {
+            if (!uploadState.cancelRequested && !pausedWithWorkRemaining) {
                 restartQueuedDiarizationMonitor(queuedDiarizationIds);
                 rememberUploadCategory(categoryName);
                 loadUploadCategories();
@@ -2399,15 +1989,15 @@ $(function () {
         const prepareUploadSession = () => {
             const formData = new FormData();
 
-            if (selectedFile?.localPath) {
-                formData.append('local_path', selectedFile.localPath);
+            if (uploadState.selectedFile?.localPath) {
+                formData.append('local_path', uploadState.selectedFile.localPath);
             } else {
-                formData.append('audio_file', selectedFile);
+                formData.append('audio_file', uploadState.selectedFile);
             }
 
             formData.append('chunk_seconds', String(Math.floor(getChunkLengthMs() / 1000)));
 
-            sourceUploadXhr = $.ajax({
+            uploadState.sourceUploadXhr = $.ajax({
                 url: uploadUrl,
                 method: 'POST',
                 data: formData,
@@ -2432,20 +2022,20 @@ $(function () {
                 },
             });
 
-            return sourceUploadXhr;
+            return uploadState.sourceUploadXhr;
         };
 
         const selectUploadFile = (file) => {
-            selectedFile = file;
-            selectedDurationMs = 0;
-            preparedSections = [];
-            cleanedSections = [];
-            cleanerStatus = 'Waiting';
-            cleanerCompletedBatches = 0;
-            currentSessionId = '';
-            currentCategoryName = '';
-            cancelRequested = false;
-            uploadCancelling = false;
+            uploadState.selectedFile = file;
+            uploadState.selectedDurationMs = 0;
+            uploadState.preparedSections = [];
+            uploadState.cleanedSections = [];
+            uploadState.cleanerStatus = 'Waiting';
+            uploadState.cleanerCompletedBatches = 0;
+            uploadState.currentSessionId = '';
+            uploadState.currentCategoryName = '';
+            uploadState.cancelRequested = false;
+            uploadState.uploadCancelling = false;
             clearUploadState();
             setProcessingState(false);
 
@@ -2502,17 +2092,17 @@ $(function () {
         };
 
         const loadMetadata = (file) => {
-            if (metadataUrl) {
-                URL.revokeObjectURL(metadataUrl);
+            if (uploadState.metadataUrl) {
+                URL.revokeObjectURL(uploadState.metadataUrl);
             }
 
-            metadataUrl = URL.createObjectURL(file);
+            uploadState.metadataUrl = URL.createObjectURL(file);
             const audio = new Audio();
             audio.preload = 'metadata';
-            audio.src = metadataUrl;
+            audio.src = uploadState.metadataUrl;
 
             audio.addEventListener('loadedmetadata', () => {
-                selectedDurationMs = Number.isFinite(audio.duration) && audio.duration > 0
+                uploadState.selectedDurationMs = Number.isFinite(audio.duration) && audio.duration > 0
                     ? audio.duration * 1000
                     : 0;
 
@@ -2520,7 +2110,7 @@ $(function () {
             }, { once: true });
 
             audio.addEventListener('error', () => {
-            selectedDurationMs = Number(file?.durationMs || 0);
+            uploadState.selectedDurationMs = Number(file?.durationMs || 0);
                 syncPlan();
             }, { once: true });
         };
@@ -2583,7 +2173,7 @@ $(function () {
 
         $transcriptList.on('click', '[data-upload-stored-action="play"]', function () {
             const id = String($(this).closest('[data-upload-stored-item]').attr('data-upload-stored-item') || '');
-            const item = uploadStoredItems.find((entry) => String(entry.id) === id);
+            const item = uploadState.uploadStoredItems.find((entry) => String(entry.id) === id);
 
             if (item) {
                 playUploadStoredItem(item);
@@ -2592,7 +2182,7 @@ $(function () {
 
         $transcriptList.on('click', '[data-upload-stored-action="remove"]', function () {
             const id = String($(this).closest('[data-upload-stored-item]').attr('data-upload-stored-item') || '');
-            const item = uploadStoredItems.find((entry) => String(entry.id) === id);
+            const item = uploadState.uploadStoredItems.find((entry) => String(entry.id) === id);
 
             if (item) {
                 deleteUploadStoredItem(item);
@@ -2601,7 +2191,7 @@ $(function () {
 
 
         $queueButton.on('click', async function () {
-            if (!selectedFile || uploadInFlight || !uploadUrl || !audioChunkUrl) {
+            if (!uploadState.selectedFile || uploadState.uploadInFlight || !uploadUrl || !audioChunkUrl) {
                 notifyError('Upload endpoints are not ready. Refresh the page and try again.');
                 return;
             }
@@ -2613,23 +2203,23 @@ $(function () {
                 return;
             }
 
-            preparedSections = buildSections();
-            preparedSections = preparedSections.map((section) => ({
+            uploadState.preparedSections = buildSections();
+            uploadState.preparedSections = uploadState.preparedSections.map((section) => ({
                 ...section,
                 status: 'Waiting',
-                preparedMeta: selectedFile.localPath ? 'Waiting for source preparation' : 'Waiting for source upload',
+                preparedMeta: uploadState.selectedFile.localPath ? 'Waiting for source preparation' : 'Waiting for source upload',
             }));
-            cleanedSections = [];
-            cleanerStatus = 'Waiting';
-            cleanerCompletedBatches = 0;
-            uploadCancelling = false;
+            uploadState.cleanedSections = [];
+            uploadState.cleanerStatus = 'Waiting';
+            uploadState.cleanerCompletedBatches = 0;
+            uploadState.uploadCancelling = false;
             setProcessingState(true);
-            $status.text(selectedFile.localPath ? 'Preparing source' : 'Uploading source 0%');
+            $status.text(uploadState.selectedFile.localPath ? 'Preparing source' : 'Uploading source 0%');
             renderQueue();
 
             try {
-                const response = currentSessionId
-                    ? { data: { session_id: currentSessionId, sections: preparedSections.map((section) => ({
+                const response = uploadState.currentSessionId
+                    ? { data: { session_id: uploadState.currentSessionId, sections: uploadState.preparedSections.map((section) => ({
                         index: section.index,
                         start_ms: section.startMs,
                         end_ms: section.endMs,
@@ -2637,28 +2227,28 @@ $(function () {
                         range_label: section.rangeLabel,
                     })) } }
                     : await prepareUploadSession();
-                sourceUploadXhr = null;
+                uploadState.sourceUploadXhr = null;
                 const sessionId = String(response?.data?.session_id || '');
                 const sections = Array.isArray(response?.data?.sections) ? response.data.sections : [];
 
                 if (!sessionId || !sections.length) {
-                    preparedSections = preparedSections.map((section) => ({
+                    uploadState.preparedSections = uploadState.preparedSections.map((section) => ({
                         ...section,
                         status: 'Failed',
                     }));
                     $status.text('Failed');
                     renderQueue();
                     notifyError('Audio upload could not be prepared.');
-                    uploadInFlight = false;
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                     return;
                 }
 
-                currentSessionId = sessionId;
-                currentCategoryName = categoryName;
-                selectedDurationMs = Number(response?.data?.duration_ms || selectedDurationMs || 0);
+                uploadState.currentSessionId = sessionId;
+                uploadState.currentCategoryName = categoryName;
+                uploadState.selectedDurationMs = Number(response?.data?.duration_ms || uploadState.selectedDurationMs || 0);
                 syncPlan();
-                preparedSections = sections.map((section, index) => ({
+                uploadState.preparedSections = sections.map((section, index) => ({
                     index: Number(section.index || index + 1),
                     startMs: Number(section.start_ms || 0),
                     endMs: Number(section.end_ms || 0),
@@ -2674,72 +2264,72 @@ $(function () {
 
                 const prepared = await prepareUploadSections(sessionId, categoryName);
 
-                if (prepared && !pauseRequested) {
+                if (prepared && !uploadState.pauseRequested) {
                     try {
                         await startPreparedUploadDiarization(sessionId);
                     } catch (xhr) {
-                        if (cancelRequested || xhr?.statusText === 'abort') {
+                        if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                             resetUploadProgress();
                             return;
                         }
                     }
                     await processUploadSections(sessionId, categoryName);
-                } else if (pauseRequested) {
+                } else if (uploadState.pauseRequested) {
                     $status.text('Paused');
-                    uploadInFlight = false;
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                 } else {
-                    uploadInFlight = false;
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                 }
             } catch (xhr) {
-                sourceUploadXhr = null;
-                if (cancelRequested || xhr?.statusText === 'abort') {
+                uploadState.sourceUploadXhr = null;
+                if (uploadState.cancelRequested || xhr?.statusText === 'abort') {
                     resetUploadProgress();
                     return;
                 }
 
-                preparedSections = preparedSections.map((section) => ({
+                uploadState.preparedSections = uploadState.preparedSections.map((section) => ({
                     ...section,
                     status: 'Failed',
                 }));
                 $status.text('Failed');
                 renderQueue();
-                notifyError(buildUploadErrorMessage(xhr));
-                uploadInFlight = false;
+                notifyError(buildUploadSessionErrorMessage(xhr));
+                uploadState.uploadInFlight = false;
                 syncUploadControls();
             }
         });
 
         $continueButton.on('click', function () {
-            if (!currentSessionId || uploadInFlight || !hasUnfinishedSections()) {
+            if (!uploadState.currentSessionId || uploadState.uploadInFlight || !hasUnfinishedSections()) {
                 return;
             }
 
-            cancelRequested = false;
-            uploadCancelling = false;
-            pauseRequested = false;
+            uploadState.cancelRequested = false;
+            uploadState.uploadCancelling = false;
+            uploadState.pauseRequested = false;
             setProcessingState(true);
-            prepareUploadSections(currentSessionId, currentCategoryName || getUploadCategory())
+            prepareUploadSections(uploadState.currentSessionId, uploadState.currentCategoryName || getUploadCategory())
                 .then((prepared) => {
-                    if (prepared && !pauseRequested) {
-                        return processUploadSections(currentSessionId, currentCategoryName || getUploadCategory());
+                    if (prepared && !uploadState.pauseRequested) {
+                        return processUploadSections(uploadState.currentSessionId, uploadState.currentCategoryName || getUploadCategory());
                     }
-                    if (pauseRequested) {
+                    if (uploadState.pauseRequested) {
                         $status.text('Paused');
                     }
-                    uploadInFlight = false;
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                     return null;
                 });
         });
 
         $retryButton.on('click', function () {
-            if (!currentSessionId || uploadInFlight || !hasRetryableSections()) {
+            if (!uploadState.currentSessionId || uploadState.uploadInFlight || !hasRetryableSections()) {
                 return;
             }
 
-            preparedSections = preparedSections.map((section) => ['Failed', 'Cancelled'].includes(section.status)
+            uploadState.preparedSections = uploadState.preparedSections.map((section) => ['Failed', 'Cancelled'].includes(section.status)
                 ? {
                     ...section,
                     status: 'Waiting',
@@ -2751,61 +2341,61 @@ $(function () {
                     noSpeech: false,
                 }
                 : section);
-            cancelRequested = false;
-            uploadCancelling = false;
-            pauseRequested = false;
+            uploadState.cancelRequested = false;
+            uploadState.uploadCancelling = false;
+            uploadState.pauseRequested = false;
             setProcessingState(true);
             renderQueue();
-            prepareUploadSections(currentSessionId, currentCategoryName || getUploadCategory())
+            prepareUploadSections(uploadState.currentSessionId, uploadState.currentCategoryName || getUploadCategory())
                 .then((prepared) => {
-                    if (prepared && !pauseRequested) {
-                        return processUploadSections(currentSessionId, currentCategoryName || getUploadCategory());
+                    if (prepared && !uploadState.pauseRequested) {
+                        return processUploadSections(uploadState.currentSessionId, uploadState.currentCategoryName || getUploadCategory());
                     }
-                    if (pauseRequested) {
+                    if (uploadState.pauseRequested) {
                         $status.text('Paused');
                     }
-                    uploadInFlight = false;
+                    uploadState.uploadInFlight = false;
                     syncUploadControls();
                     return null;
                 });
         });
 
         $pauseButton.on('click', function () {
-            if (!uploadInFlight || !currentSessionId || pauseRequested) {
+            if (!uploadState.uploadInFlight || !uploadState.currentSessionId || uploadState.pauseRequested) {
                 return;
             }
 
-            pauseRequested = true;
+            uploadState.pauseRequested = true;
             $status.text('Pausing');
             syncUploadControls();
         });
 
         $cancelButton.on('click', function () {
-            if (!uploadInFlight && !hasUploadProgress()) {
+            if (!uploadState.uploadInFlight && !hasUploadProgress()) {
                 return;
             }
 
-            cancelRequested = true;
-            pauseRequested = false;
-            const speakerSessionId = currentSessionId;
-            const hadActiveRequest = Boolean(sourceUploadXhr || activeSectionXhr || activePrepareXhrs.length);
+            uploadState.cancelRequested = true;
+            uploadState.pauseRequested = false;
+            const speakerSessionId = uploadState.currentSessionId;
+            const hadActiveRequest = Boolean(uploadState.sourceUploadXhr || uploadState.activeSectionXhr || uploadState.activePrepareXhrs.length);
 
-            cancelWhisperProgress(activeSectionProgressId);
+            cancelWhisperProgress(uploadState.activeSectionProgressId);
             showUploadCancellingState();
 
-            if (sourceUploadXhr) {
-                sourceUploadXhr.abort();
+            if (uploadState.sourceUploadXhr) {
+                uploadState.sourceUploadXhr.abort();
             }
 
-            activePrepareXhrs.forEach((xhr) => xhr?.abort?.());
-            activePrepareXhrs = [];
+            uploadState.activePrepareXhrs.forEach((xhr) => xhr?.abort?.());
+            uploadState.activePrepareXhrs = [];
 
-            if (activeSectionXhr) {
-                activeSectionXhr.abort();
+            if (uploadState.activeSectionXhr) {
+                uploadState.activeSectionXhr.abort();
             }
 
             window.setTimeout(() => {
-                if (cancelRequested || uploadCancelling) {
+                if (uploadState.cancelRequested || uploadState.uploadCancelling) {
                     resetUploadProgress('Cancelled');
                 }
             }, hadActiveRequest ? 350 : 0);
@@ -2813,7 +2403,7 @@ $(function () {
         });
 
         window.addEventListener('pagehide', () => {
-            releaseSpeakerSession(currentSessionId, true);
+            releaseSpeakerSession(uploadState.currentSessionId, true);
         });
 
         const restoreUploadState = () => {
@@ -2836,10 +2426,10 @@ $(function () {
                             return;
                         }
 
-                        currentSessionId = String(stored.sessionId);
-                        currentCategoryName = String(stored.categoryName || '');
-                        selectedDurationMs = Number(stored.durationMs || 0);
-                        preparedSections = stored.sections.map((section) => ({
+                        uploadState.currentSessionId = String(stored.sessionId);
+                        uploadState.currentCategoryName = String(stored.categoryName || '');
+                        uploadState.selectedDurationMs = Number(stored.durationMs || 0);
+                        uploadState.preparedSections = stored.sections.map((section) => ({
                             ...section,
                             status: section.status === 'Processing' ? 'Cancelled' : section.status,
                             preparedMeta: section.status === 'Processing' ? 'Ready to continue' : section.preparedMeta,
@@ -2850,8 +2440,8 @@ $(function () {
                             return;
                         }
 
-                        if (currentCategoryName && !$categoryInput.val()) {
-                            $categoryInput.val(currentCategoryName);
+                        if (uploadState.currentCategoryName && !$categoryInput.val()) {
+                            $categoryInput.val(uploadState.currentCategoryName);
                         }
                         syncPlan();
                         syncTranscriptCategory();
@@ -3020,161 +2610,11 @@ $(function () {
         });
     }
 
-    let isRecording = false;
-    let stream = null;
-    let recorder = null;
-    let progressTimer = null;
-    let autoStopTimer = null;
-    let sessionStartedAt = 0;
-    let segmentStartedAt = 0;
-    let segmentIndex = 0;
-    let queuedItems = [];
-    let storedItems = [];
-    let activeParts = [];
-    let activeAudio = null;
-    let activeAudioId = null;
-    let activePlaybackKind = null;
-    let uploadInFlight = false;
-    let activeUploadXhr = null;
-    let activeUploadItemId = null;
-    let activeWhisperProgressId = '';
-    let activeLivePhaseProgress = null;
-    let activeLivePhaseTimer = null;
-    let cancelUploadByUser = false;
-    let uploadPaused = false;
-    let liveCleanerStatus = 'Waiting';
-    let activeCategoryName = String($body.data('default-category-name') || '').trim();
-    let liveShowingVadLogs = false;
-    let activeSpeakerSessionId = '';
+    const liveState = createLiveWorkflowState({
+        categoryName: String($body.data('default-category-name') || '').trim(),
+    });
 
-    const formatClock = (milliseconds) => {
-        const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-        const hours = Math.floor(totalSeconds / 3600);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-
-        if (hours > 0) {
-            return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-        }
-
-        return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-    };
-
-    const formatClipRange = (startMs, endMs) => `${formatClock(startMs)}-${formatClock(endMs)}`;
-
-    const formatBytes = (bytes) => {
-        if (!Number.isFinite(bytes) || bytes <= 0) {
-            return '0 MB';
-        }
-
-        const units = ['B', 'KB', 'MB', 'GB'];
-        const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-        const value = bytes / (1024 ** index);
-
-        return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
-    };
-
-    const formatRelativeClock = (milliseconds) => `+${formatClock(milliseconds)}`;
-
-    const slugify = (value) => String(value || 'transcription')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'transcription';
-
-    const hasUsefulTranscriptText = (value) => {
-        const normalized = String(value || '').trim().toLowerCase();
-
-        return normalized !== '' && normalized !== 'no speech detected' && normalized !== 'no speech detected.';
-    };
-
-    const hasUsefulStoredTranscript = (item) => hasUsefulTranscriptText(
-        item?.translatedText || item?.translated_text || item?.text || '',
-    );
-
-    const sortByTimeAscending = (first, second) => {
-        const firstStart = Number(first.clipStartMs || first.clip_start_ms || 0);
-        const secondStart = Number(second.clipStartMs || second.clip_start_ms || 0);
-
-        return firstStart === secondStart
-            ? Number(first.id || first.audioChunkId || first.audio_chunk_id || 0) - Number(second.id || second.audioChunkId || second.audio_chunk_id || 0)
-            : firstStart - secondStart;
-    };
-
-    const downloadTextFile = (filename, content) => {
-        saveTextExport(filename, content);
-    };
-
-    const notify = (message, type = 'success') => {
-        if (typeof window.showNotification === 'function') {
-            window.showNotification(message, type);
-        }
-    };
-
-    const notifyError = (message) => {
-        notify(message, 'error');
-    };
-
-    const buildUploadErrorMessage = (xhr, item) => {
-        const clipName = item ? `Clip ${item.index}` : 'This clip';
-        const serverMessage = String(xhr?.responseJSON?.message || '').trim();
-        const fieldErrors = xhr?.responseJSON?.errors || {};
-
-        if (fieldErrors.category_name?.length) {
-            return 'Choose a project name before you start recording.';
-        }
-
-        if (fieldErrors.audio?.length) {
-            return `${clipName} could not be saved because the audio file was not ready.`;
-        }
-
-        if (fieldErrors.duration_ms?.length) {
-            return `${clipName} could not be saved because its length could not be measured.`;
-        }
-
-        if (fieldErrors.range_label?.length || fieldErrors.clip_index?.length || fieldErrors.clip_start_ms?.length || fieldErrors.clip_end_ms?.length) {
-            return `${clipName} could not be saved because its time range is missing.`;
-        }
-
-        if (xhr?.status === 0) {
-            return `${clipName} could not be saved because the app could not reach the local database.`;
-        }
-
-        if (serverMessage) {
-            return serverMessage;
-        }
-
-        if (xhr?.status === 413) {
-            return `${clipName} is too large to save right now.`;
-        }
-
-        if (xhr?.status >= 500) {
-            return `${clipName} could not be saved because the local storage step failed.`;
-        }
-
-        return `${clipName} could not be saved. Please try again.`;
-    };
-
-    const buildStorageLoadErrorMessage = (xhr, selectedCategory) => {
-        const serverMessage = String(xhr?.responseJSON?.message || '').trim();
-
-        if (serverMessage) {
-            return serverMessage;
-        }
-
-        const target = selectedCategory ? `for "${selectedCategory}"` : '';
-        return `Could not load saved recordings ${target}.`;
-    };
-
-    const buildDeleteErrorMessage = () => 'Could not remove this clip right now.';
-
-    const getCategoryName = () => String($categoryInput.val() || '').trim();
-
-    const getLanguageCode = () => getTranscriptionEngine() === 'offline'
-        ? 'auto'
-        : String($languageInput.val() || 'multi').trim() || 'multi';
-
-    const escapeHtml = (value) => $('<div>').text(String(value || '')).html();
+    const hasUsefulStoredTranscript = hasUsefulTranscript;
 
     const loadLiveTimelineCursors = () => {
         try {
@@ -3255,7 +2695,7 @@ $(function () {
     };
 
     const renderVadLogs = (logs, categoryName) => {
-        liveShowingVadLogs = true;
+        liveState.liveShowingVadLogs = true;
         $liveTranscriptBadge.text(String(logs.length));
 
         if (!logs.length) {
@@ -3302,7 +2742,7 @@ $(function () {
     };
 
     const restoreLogButton = () => {
-        $logLive.prop('disabled', false).html(liveShowingVadLogs ? `
+        $logLive.prop('disabled', false).html(liveState.liveShowingVadLogs ? `
             <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M15 18l-6-6 6-6" />
             </svg>
@@ -3321,8 +2761,8 @@ $(function () {
     };
 
     const loadVadLogs = () => {
-        if (liveShowingVadLogs) {
-            liveShowingVadLogs = false;
+        if (liveState.liveShowingVadLogs) {
+            liveState.liveShowingVadLogs = false;
             restoreLogButton();
             renderStoredList();
             return;
@@ -3382,7 +2822,7 @@ $(function () {
 
         const $button = $('[data-furnish-live]');
         $button.prop('disabled', true).text('Polishing');
-        liveCleanerStatus = 'Polishing';
+        liveState.liveCleanerStatus = 'Polishing';
         renderStoredList();
         updateLiveCleanerProgress();
 
@@ -3406,12 +2846,12 @@ $(function () {
                         cleanTimestamps: row.clean_timestamps || [],
                     })),
                 };
-                liveCleanerStatus = 'Complete';
+                liveState.liveCleanerStatus = 'Complete';
                 renderStoredList();
                 notify('Transcript polished.');
             },
             error: (xhr) => {
-                liveCleanerStatus = 'Failed';
+                liveState.liveCleanerStatus = 'Failed';
                 updateLiveCleanerProgress();
                 notifyError(String(xhr?.responseJSON?.message || 'Transcript could not be polished.'));
             },
@@ -3436,16 +2876,16 @@ $(function () {
     const syncCategoryUi = () => {
         setCategoryBadge(getCategoryName());
 
-        if (!isRecording) {
+        if (!liveState.isRecording) {
             syncRecordButtonState();
-            if (!uploadPaused) {
+            if (!liveState.uploadPaused) {
                 setSupportMessage(getCategoryName() ? 'Ready' : 'Choose project');
             }
         }
     };
 
     const syncCategoryOptions = () => {
-        return [...new Set(storedItems.map((item) => item.categoryName).filter(Boolean))];
+        return [...new Set(liveState.storedItems.map((item) => item.categoryName).filter(Boolean))];
     };
 
     const getStoredItemsForCategory = () => {
@@ -3455,7 +2895,7 @@ $(function () {
             return [];
         }
 
-        return storedItems
+        return liveState.storedItems
             .filter((item) => String(item.categoryName || '').toLowerCase() === selectedCategory)
             .filter(hasUsefulStoredTranscript)
             .sort(sortByTimeAscending);
@@ -3480,24 +2920,24 @@ $(function () {
             && Array.isArray(cleanedPayload.items)
             && cleanedPayload.items.length > 0;
 
-        if (liveCleanerStatus !== 'Polishing' && liveCleanerStatus !== 'Failed') {
-            liveCleanerStatus = hasCleanedCategory ? 'Complete' : 'Waiting';
+        if (liveState.liveCleanerStatus !== 'Polishing' && liveState.liveCleanerStatus !== 'Failed') {
+            liveState.liveCleanerStatus = hasCleanedCategory ? 'Complete' : 'Waiting';
         }
 
-        const complete = liveCleanerStatus === 'Complete';
+        const complete = liveState.liveCleanerStatus === 'Complete';
         const done = complete ? total : 0;
         const percent = total > 0 && complete ? 100 : 0;
 
-        $liveCleanerState.text(liveCleanerStatus);
+        $liveCleanerState.text(liveState.liveCleanerStatus);
         $liveCleanerProgressLabel.text(`${done} / ${total} batches`);
         $liveCleanerProgressPercent.text(`${percent}%`);
         $liveCleanerProgressBar.css('width', `${percent}%`);
 
-        if (liveCleanerStatus === 'Polishing') {
+        if (liveState.liveCleanerStatus === 'Polishing') {
             $liveCleanerProgressNote.text(`Polishing ${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch' : 'batches'}.`);
-        } else if (liveCleanerStatus === 'Complete') {
+        } else if (liveState.liveCleanerStatus === 'Complete') {
             $liveCleanerProgressNote.text('The polished transcript is ready for viewing and export.');
-        } else if (liveCleanerStatus === 'Failed') {
+        } else if (liveState.liveCleanerStatus === 'Failed') {
             $liveCleanerProgressNote.text('Polishing failed. You can polish the transcript again.');
         } else {
             $liveCleanerProgressNote.text(total > 0
@@ -3533,12 +2973,12 @@ $(function () {
     };
 
     const syncRecordingTimeline = () => {
-        if (isRecording) {
+        if (liveState.isRecording) {
             return;
         }
 
         const latestEndMs = getLatestTimelineEndMsForCategory();
-        sessionStartedAt = latestEndMs > 0 ? Date.now() - latestEndMs : 0;
+        liveState.sessionStartedAt = latestEndMs > 0 ? Date.now() - latestEndMs : 0;
     };
 
     const renderCategorySuggestions = () => {
@@ -3582,11 +3022,11 @@ $(function () {
     };
 
     const getCurrentClipRange = () => {
-        if (!sessionStartedAt) {
+        if (!liveState.sessionStartedAt) {
             return '00:00-01:00';
         }
 
-        const elapsed = Math.max(0, Date.now() - sessionStartedAt);
+        const elapsed = Math.max(0, Date.now() - liveState.sessionStartedAt);
         const clipStart = Math.floor(elapsed / segmentLengthMs) * segmentLengthMs;
         const clipEnd = clipStart + segmentLengthMs;
 
@@ -3623,16 +3063,16 @@ $(function () {
         $support.text(message);
     };
 
-    const hasLiveWaitingClips = () => queuedItems.some((item) => item.uploadState === 'waiting');
+    const hasLiveWaitingClips = () => liveState.queuedItems.some((item) => item.uploadState === 'waiting');
 
-    const hasLiveRetryableClips = () => queuedItems.some((item) => item.uploadState === 'error');
+    const hasLiveRetryableClips = () => liveState.queuedItems.some((item) => item.uploadState === 'error');
 
-    const hasLiveCancelableClips = () => queuedItems.some((item) => ['waiting', 'sending'].includes(item.uploadState));
+    const hasLiveCancelableClips = () => liveState.queuedItems.some((item) => ['waiting', 'sending'].includes(item.uploadState));
 
     const syncLiveControls = () => {
-        $liveContinueButton.prop('disabled', uploadInFlight || !uploadPaused || !hasLiveWaitingClips());
-        $liveRetryButton.prop('disabled', uploadInFlight || !hasLiveRetryableClips());
-        $liveCancelButton.prop('disabled', !uploadInFlight && !hasLiveCancelableClips());
+        $liveContinueButton.prop('disabled', liveState.uploadInFlight || !liveState.uploadPaused || !hasLiveWaitingClips());
+        $liveRetryButton.prop('disabled', liveState.uploadInFlight || !hasLiveRetryableClips());
+        $liveCancelButton.prop('disabled', !liveState.uploadInFlight && !hasLiveCancelableClips());
     };
 
     const setIdleUi = () => {
@@ -3659,14 +3099,14 @@ $(function () {
         $categoryInput.prop('disabled', true);
         $languageInput.prop('disabled', true);
         syncRecordButtonState();
-        setSupportMessage(uploadInFlight ? 'Sending' : 'Live');
+        setSupportMessage(liveState.uploadInFlight ? 'Sending' : 'Live');
     };
 
     const updateQueueSummary = () => {
-        $count.text(String(queuedItems.length));
+        $count.text(String(liveState.queuedItems.length));
 
         if ($empty.length) {
-            $empty.toggleClass('hidden', queuedItems.length > 0);
+            $empty.toggleClass('hidden', liveState.queuedItems.length > 0);
         }
 
         syncLiveControls();
@@ -3709,7 +3149,7 @@ $(function () {
     );
 
     const updateLivePhaseProgress = (itemId, updates = {}, activeLabel = '') => {
-        const item = queuedItems.find((entry) => entry.id === itemId);
+        const item = liveState.queuedItems.find((entry) => entry.id === itemId);
         if (!item) {
             return;
         }
@@ -3722,7 +3162,7 @@ $(function () {
             ...(item.phaseProgress || {}),
             ...updates,
         };
-        activeLivePhaseProgress = item.phaseProgress;
+        liveState.activeLivePhaseProgress = item.phaseProgress;
 
         const transcribeLabel = item.transcriptionEngine === 'offline' ? 'Whisper' : 'Server';
         const percent = livePhaseAverage(item.phaseProgress);
@@ -3736,34 +3176,34 @@ $(function () {
             $row.find('[data-upload-state]').text(`${percent}%`);
         }
 
-        if (!isRecording) {
+        if (!liveState.isRecording) {
             $activeName.text('Processing');
             $activeNote.text(summary);
             $progress.css('width', `${percent}%`);
             $progressLabel.text(`${percent}%`);
         }
-        setSupportMessage(isRecording ? `Live - ${label}` : label);
+        setSupportMessage(liveState.isRecording ? `Live - ${label}` : label);
     };
 
     const stopLivePhaseTimer = () => {
-        if (activeLivePhaseTimer) {
-            window.clearInterval(activeLivePhaseTimer);
-            activeLivePhaseTimer = null;
+        if (liveState.activeLivePhaseTimer) {
+            window.clearInterval(liveState.activeLivePhaseTimer);
+            liveState.activeLivePhaseTimer = null;
         }
     };
 
     const startLivePhaseTimer = (item) => {
         stopLivePhaseTimer();
-        activeLivePhaseProgress = item.phaseProgress || {
+        liveState.activeLivePhaseProgress = item.phaseProgress || {
             prepare: 0,
             silero: 0,
             transcribe: 0,
             sherpa: 0,
         };
-        item.phaseProgress = activeLivePhaseProgress;
+        item.phaseProgress = liveState.activeLivePhaseProgress;
 
-        activeLivePhaseTimer = window.setInterval(() => {
-            if (activeUploadItemId !== item.id || !uploadInFlight) {
+        liveState.activeLivePhaseTimer = window.setInterval(() => {
+            if (liveState.activeUploadItemId !== item.id || !liveState.uploadInFlight) {
                 stopLivePhaseTimer();
                 return;
             }
@@ -3907,13 +3347,13 @@ $(function () {
         syncCategoryOptions();
         updateLiveCleanerProgress();
 
-        if (activeAudioId && activePlaybackKind === 'stored') {
-            setStoredItemPlaybackState(activeAudioId, true);
+        if (liveState.activeAudioId && liveState.activePlaybackKind === 'stored') {
+            setStoredItemPlaybackState(liveState.activeAudioId, true);
         }
     };
 
     const setQueueItemUploadState = (itemId, state) => {
-        const item = queuedItems.find((entry) => entry.id === itemId);
+        const item = liveState.queuedItems.find((entry) => entry.id === itemId);
         if (!item) {
             return;
         }
@@ -3933,47 +3373,47 @@ $(function () {
     };
 
     const stopActiveAudio = (resetProgress = false) => {
-        if (!activeAudio) {
+        if (!liveState.activeAudio) {
             return;
         }
 
-        const itemId = activeAudioId;
-        activeAudio.pause();
-        activeAudio.currentTime = 0;
+        const itemId = liveState.activeAudioId;
+        liveState.activeAudio.pause();
+        liveState.activeAudio.currentTime = 0;
 
         if (itemId) {
-            if (activePlaybackKind === 'stored') {
+            if (liveState.activePlaybackKind === 'stored') {
                 setStoredItemPlaybackState(itemId, false);
             } else {
                 setQueueItemPlaybackState(itemId, false);
             }
 
             if (resetProgress) {
-                const item = activePlaybackKind === 'stored'
-                    ? storedItems.find((entry) => entry.id === itemId)
-                    : queuedItems.find((entry) => entry.id === itemId);
+                const item = liveState.activePlaybackKind === 'stored'
+                    ? liveState.storedItems.find((entry) => entry.id === itemId)
+                    : liveState.queuedItems.find((entry) => entry.id === itemId);
                 if (item) {
                     updateQueueItemProgress(itemId, 0, item.durationMs || 1000);
                 }
             }
         }
 
-        activeAudio = null;
-        activeAudioId = null;
-        activePlaybackKind = null;
+        liveState.activeAudio = null;
+        liveState.activeAudioId = null;
+        liveState.activePlaybackKind = null;
     };
 
     const processUploadQueue = () => {
-        if (uploadPaused || uploadInFlight || !uploadUrl) {
+        if (liveState.uploadPaused || liveState.uploadInFlight || !uploadUrl) {
             syncLiveControls();
             return;
         }
 
-        const nextItem = queuedItems.find((entry) => entry.uploadState === 'waiting');
+        const nextItem = liveState.queuedItems.find((entry) => entry.uploadState === 'waiting');
         if (!nextItem) {
-            if (isRecording) {
+            if (liveState.isRecording) {
                 setSupportMessage('Live');
-            } else if (!uploadPaused) {
+            } else if (!liveState.uploadPaused) {
                 setSupportMessage('Ready');
                 $activeName.text('Ready');
                 $activeNote.text('');
@@ -3984,8 +3424,8 @@ $(function () {
             return;
         }
 
-        uploadInFlight = true;
-        activeUploadItemId = nextItem.id;
+        liveState.uploadInFlight = true;
+        liveState.activeUploadItemId = nextItem.id;
         const transcriptionEngine = getTranscriptionEngine();
         nextItem.transcriptionEngine = transcriptionEngine;
         nextItem.phaseProgress = {
@@ -4002,7 +3442,7 @@ $(function () {
 
         const offline = transcriptionEngine === 'offline';
         const progressId = offline ? createTranscriptionProgressId() : '';
-        activeWhisperProgressId = progressId;
+        liveState.activeWhisperProgressId = progressId;
         if (progressId) {
             registerWhisperProgress(progressId, (percent) => {
                 updateQueueItemTranscriptionProgress(nextItem.id, percent);
@@ -4012,7 +3452,7 @@ $(function () {
         const formData = new FormData();
         formData.append('audio', nextItem.blob, `clip-${nextItem.index}.webm`);
         formData.append('user_id', String(defaultUserId));
-        formData.append('category_name', nextItem.categoryName || activeCategoryName || getCategoryName());
+        formData.append('category_name', nextItem.categoryName || liveState.activeCategoryName || getCategoryName());
         formData.append('clip_index', String(nextItem.index));
         formData.append('clip_start_ms', String(nextItem.clipStartMs));
         formData.append('clip_end_ms', String(nextItem.clipEndMs));
@@ -4027,7 +3467,7 @@ $(function () {
             formData.append('progress_id', progressId);
         }
 
-        activeUploadXhr = $.ajax({
+        liveState.activeUploadXhr = $.ajax({
             url: uploadUrl,
             method: 'POST',
             data: formData,
@@ -4063,7 +3503,7 @@ $(function () {
                     sherpa: 100,
                 }, 'Complete 100%');
                 rememberLiveTimelineCursor(
-                    nextItem.categoryName || activeCategoryName || getCategoryName(),
+                    nextItem.categoryName || liveState.activeCategoryName || getCategoryName(),
                     Number(responseData.clip_end_ms || nextItem.clipEndMs || 0),
                 );
                 setSupportMessage('Saved');
@@ -4071,13 +3511,13 @@ $(function () {
                 removeQueuedItem(nextItem.id, { skipAbort: true });
             },
             error: (_xhr, status) => {
-                if (status === 'abort' && cancelUploadByUser) {
-                    cancelUploadByUser = false;
+                if (status === 'abort' && liveState.cancelUploadByUser) {
+                    liveState.cancelUploadByUser = false;
                     return;
                 }
 
                 setQueueItemUploadState(nextItem.id, 'error');
-                uploadPaused = true;
+                liveState.uploadPaused = true;
                 const errorMessage = buildUploadErrorMessage(_xhr, nextItem);
                 setSupportMessage('Save failed');
                 notifyError(errorMessage);
@@ -4086,15 +3526,15 @@ $(function () {
             },
             complete: () => {
                 stopLivePhaseTimer();
-                clearWhisperProgress(activeWhisperProgressId);
-                activeWhisperProgressId = '';
-                activeLivePhaseProgress = null;
-                uploadInFlight = false;
-                activeUploadXhr = null;
-                activeUploadItemId = null;
+                clearWhisperProgress(liveState.activeWhisperProgressId);
+                liveState.activeWhisperProgressId = '';
+                liveState.activeLivePhaseProgress = null;
+                liveState.uploadInFlight = false;
+                liveState.activeUploadXhr = null;
+                liveState.activeUploadItemId = null;
                 syncLiveControls();
 
-                if (!uploadPaused) {
+                if (!liveState.uploadPaused) {
                     processUploadQueue();
                 }
             },
@@ -4103,22 +3543,22 @@ $(function () {
 
     const removeQueuedItem = (id, options = {}) => {
         const { skipAbort = false } = options;
-        const index = queuedItems.findIndex((item) => item.id === id);
+        const index = liveState.queuedItems.findIndex((item) => item.id === id);
         if (index === -1) {
             return;
         }
 
-        const [item] = queuedItems.splice(index, 1);
+        const [item] = liveState.queuedItems.splice(index, 1);
 
-        if (activeAudioId === id) {
+        if (liveState.activeAudioId === id) {
             stopActiveAudio(false);
         }
 
-        if (!skipAbort && activeUploadItemId === id && activeUploadXhr) {
-            cancelUploadByUser = true;
+        if (!skipAbort && liveState.activeUploadItemId === id && liveState.activeUploadXhr) {
+            liveState.cancelUploadByUser = true;
             stopLivePhaseTimer();
-            cancelWhisperProgress(activeWhisperProgressId);
-            activeUploadXhr.abort();
+            cancelWhisperProgress(liveState.activeWhisperProgressId);
+            liveState.activeUploadXhr.abort();
         }
 
         if (item.url) {
@@ -4128,13 +3568,13 @@ $(function () {
         if (!skipAbort
             && item.finalizeSession
             && item.speakerSessionId
-            && !queuedItems.some((queued) => queued.speakerSessionId === item.speakerSessionId)) {
+            && !liveState.queuedItems.some((queued) => queued.speakerSessionId === item.speakerSessionId)) {
             releaseSpeakerSession(item.speakerSessionId);
         }
 
         renderQueue();
 
-        if (!uploadPaused) {
+        if (!liveState.uploadPaused) {
             processUploadQueue();
         }
 
@@ -4142,25 +3582,25 @@ $(function () {
     };
 
     const cancelLiveQueue = () => {
-        const removableItems = queuedItems.filter((item) => ['waiting', 'sending'].includes(item.uploadState));
+        const removableItems = liveState.queuedItems.filter((item) => ['waiting', 'sending'].includes(item.uploadState));
         const sessionIds = [...new Set([
-            activeSpeakerSessionId,
+            liveState.activeSpeakerSessionId,
             ...queuedItems.map((item) => item.speakerSessionId),
         ].filter(Boolean))];
 
-        if (!removableItems.length && !uploadInFlight && !sessionIds.length) {
+        if (!removableItems.length && !liveState.uploadInFlight && !sessionIds.length) {
             return;
         }
 
-        if (activeUploadXhr) {
-            cancelUploadByUser = true;
+        if (liveState.activeUploadXhr) {
+            liveState.cancelUploadByUser = true;
             stopLivePhaseTimer();
-            cancelWhisperProgress(activeWhisperProgressId);
-            activeUploadXhr.abort();
+            cancelWhisperProgress(liveState.activeWhisperProgressId);
+            liveState.activeUploadXhr.abort();
         }
 
         removableItems.forEach((item) => {
-            if (activeAudioId === item.id && activePlaybackKind === 'live') {
+            if (liveState.activeAudioId === item.id && liveState.activePlaybackKind === 'live') {
                 stopActiveAudio(false);
             }
 
@@ -4169,52 +3609,52 @@ $(function () {
             }
         });
 
-        queuedItems = queuedItems.filter((item) => !['waiting', 'sending'].includes(item.uploadState));
+        liveState.queuedItems = liveState.queuedItems.filter((item) => !['waiting', 'sending'].includes(item.uploadState));
         sessionIds.forEach((sessionId) => releaseSpeakerSession(sessionId));
-        activeSpeakerSessionId = '';
-        uploadInFlight = false;
-        activeUploadItemId = null;
-        activeLivePhaseProgress = null;
-        uploadPaused = hasLiveRetryableClips();
-        setSupportMessage(uploadPaused ? 'Saving paused' : (isRecording ? 'Live' : 'Ready'));
+        liveState.activeSpeakerSessionId = '';
+        liveState.uploadInFlight = false;
+        liveState.activeUploadItemId = null;
+        liveState.activeLivePhaseProgress = null;
+        liveState.uploadPaused = hasLiveRetryableClips();
+        setSupportMessage(liveState.uploadPaused ? 'Saving paused' : (liveState.isRecording ? 'Live' : 'Ready'));
         renderQueue();
         syncLiveControls();
     };
 
     const continueLiveQueue = () => {
-        if (uploadInFlight || !hasLiveWaitingClips()) {
+        if (liveState.uploadInFlight || !hasLiveWaitingClips()) {
             return;
         }
 
-        uploadPaused = false;
+        liveState.uploadPaused = false;
         setSupportMessage('Ready');
         syncLiveControls();
         processUploadQueue();
     };
 
     const retryLiveQueue = () => {
-        if (uploadInFlight || !hasLiveRetryableClips()) {
+        if (liveState.uploadInFlight || !hasLiveRetryableClips()) {
             return;
         }
 
-        queuedItems = queuedItems.map((item) => item.uploadState === 'error'
+        liveState.queuedItems = liveState.queuedItems.map((item) => item.uploadState === 'error'
             ? {
                 ...item,
                 uploadState: 'waiting',
             }
             : item);
-        uploadPaused = false;
+        liveState.uploadPaused = false;
         renderQueue();
         processUploadQueue();
     };
 
     const playQueuedItem = (item) => {
-        if (activeAudioId === item.id && activeAudio) {
-            if (activeAudio.paused) {
-                activeAudio.play();
+        if (liveState.activeAudioId === item.id && liveState.activeAudio) {
+            if (liveState.activeAudio.paused) {
+                liveState.activeAudio.play();
                 setQueueItemPlaybackState(item.id, true);
             } else {
-                activeAudio.pause();
+                liveState.activeAudio.pause();
                 setQueueItemPlaybackState(item.id, false);
             }
 
@@ -4223,56 +3663,56 @@ $(function () {
 
         stopActiveAudio(false);
 
-        activeAudio = new Audio(item.url);
-        activeAudio.preload = 'metadata';
-        activeAudioId = item.id;
-        activePlaybackKind = 'live';
+        liveState.activeAudio = new Audio(item.url);
+        liveState.activeAudio.preload = 'metadata';
+        liveState.activeAudioId = item.id;
+        liveState.activePlaybackKind = 'live';
 
         const syncDuration = () => {
-            const durationMs = Number.isFinite(activeAudio.duration) && activeAudio.duration > 0
-                ? activeAudio.duration * 1000
+            const durationMs = Number.isFinite(liveState.activeAudio.duration) && liveState.activeAudio.duration > 0
+                ? liveState.activeAudio.duration * 1000
                 : item.durationMs || 1000;
 
             item.durationMs = durationMs;
-            updateQueueItemProgress(item.id, activeAudio.currentTime * 1000, durationMs);
+            updateQueueItemProgress(item.id, liveState.activeAudio.currentTime * 1000, durationMs);
         };
 
-        activeAudio.addEventListener('loadedmetadata', syncDuration);
-        activeAudio.addEventListener('timeupdate', () => {
-            const durationMs = Number.isFinite(activeAudio.duration) && activeAudio.duration > 0
-                ? activeAudio.duration * 1000
+        liveState.activeAudio.addEventListener('loadedmetadata', syncDuration);
+        liveState.activeAudio.addEventListener('timeupdate', () => {
+            const durationMs = Number.isFinite(liveState.activeAudio.duration) && liveState.activeAudio.duration > 0
+                ? liveState.activeAudio.duration * 1000
                 : item.durationMs || 1000;
 
-            updateQueueItemProgress(item.id, activeAudio.currentTime * 1000, durationMs);
+            updateQueueItemProgress(item.id, liveState.activeAudio.currentTime * 1000, durationMs);
         });
-        activeAudio.addEventListener('pause', () => {
-            if (activeAudioId === item.id && activeAudio.paused) {
+        liveState.activeAudio.addEventListener('pause', () => {
+            if (liveState.activeAudioId === item.id && liveState.activeAudio.paused) {
                 setQueueItemPlaybackState(item.id, false);
             }
         });
-        activeAudio.addEventListener('ended', () => {
-            const durationMs = Number.isFinite(activeAudio.duration) && activeAudio.duration > 0
-                ? activeAudio.duration * 1000
+        liveState.activeAudio.addEventListener('ended', () => {
+            const durationMs = Number.isFinite(liveState.activeAudio.duration) && liveState.activeAudio.duration > 0
+                ? liveState.activeAudio.duration * 1000
                 : item.durationMs || 1000;
 
             updateQueueItemProgress(item.id, durationMs, durationMs);
             setQueueItemPlaybackState(item.id, false);
-            activeAudio = null;
-            activeAudioId = null;
-            activePlaybackKind = null;
+            liveState.activeAudio = null;
+            liveState.activeAudioId = null;
+            liveState.activePlaybackKind = null;
         });
 
-        activeAudio.play();
+        liveState.activeAudio.play();
         setQueueItemPlaybackState(item.id, true);
     };
 
     const playStoredItem = (item) => {
-        if (activeAudioId === item.id && activeAudio) {
-            if (activeAudio.paused) {
-                activeAudio.play();
+        if (liveState.activeAudioId === item.id && liveState.activeAudio) {
+            if (liveState.activeAudio.paused) {
+                liveState.activeAudio.play();
                 setStoredItemPlaybackState(item.id, true);
             } else {
-                activeAudio.pause();
+                liveState.activeAudio.pause();
                 setStoredItemPlaybackState(item.id, false);
             }
 
@@ -4281,31 +3721,31 @@ $(function () {
 
         stopActiveAudio(false);
 
-        activeAudio = new Audio(item.playUrl || `${playUrlBase}/${item.id}/audio`);
-        activeAudio.preload = 'metadata';
-        activeAudioId = item.id;
-        activePlaybackKind = 'stored';
+        liveState.activeAudio = new Audio(item.playUrl || `${playUrlBase}/${item.id}/audio`);
+        liveState.activeAudio.preload = 'metadata';
+        liveState.activeAudioId = item.id;
+        liveState.activePlaybackKind = 'stored';
 
-        activeAudio.addEventListener('ended', () => {
+        liveState.activeAudio.addEventListener('ended', () => {
             setStoredItemPlaybackState(item.id, false);
-            activeAudio = null;
-            activeAudioId = null;
-            activePlaybackKind = null;
+            liveState.activeAudio = null;
+            liveState.activeAudioId = null;
+            liveState.activePlaybackKind = null;
         });
-        activeAudio.addEventListener('pause', () => {
-            if (activeAudioId === item.id && activeAudio.paused) {
+        liveState.activeAudio.addEventListener('pause', () => {
+            if (liveState.activeAudioId === item.id && liveState.activeAudio.paused) {
                 setStoredItemPlaybackState(item.id, false);
             }
         });
 
-        activeAudio.play();
+        liveState.activeAudio.play();
         setStoredItemPlaybackState(item.id, true);
     };
 
     const deleteStoredItem = (item) => {
         const deleteUrl = item.deleteUrl || `${deleteUrlBase}/${item.id}`;
 
-        if (activeAudioId === item.id && activePlaybackKind === 'stored') {
+        if (liveState.activeAudioId === item.id && liveState.activePlaybackKind === 'stored') {
             stopActiveAudio(false);
         }
 
@@ -4313,9 +3753,9 @@ $(function () {
             url: deleteUrl,
             method: 'DELETE',
             success: () => {
-                storedItems = storedItems.filter((entry) => entry.id !== item.id);
+                liveState.storedItems = liveState.storedItems.filter((entry) => entry.id !== item.id);
                 renderStoredList();
-                setSupportMessage(isRecording ? 'Live' : 'Ready');
+                setSupportMessage(liveState.isRecording ? 'Live' : 'Ready');
             },
             error: () => {
                 notifyError(buildDeleteErrorMessage());
@@ -4325,7 +3765,7 @@ $(function () {
 
     const loadStoredClips = () => {
         if (!storedUrl) {
-            storedItems = [];
+            liveState.storedItems = [];
             renderStoredList();
             return;
         }
@@ -4333,7 +3773,7 @@ $(function () {
         $.getJSON(storedUrl)
             .done((response) => {
                 const items = Array.isArray(response?.data) ? response.data : [];
-                storedItems = items.map((item) => ({
+                liveState.storedItems = items.map((item) => ({
                     ...item,
                     rangeLabel: item.rangeLabel || item.range_label || null,
                     categoryName: item.categoryName || item.category_name || null,
@@ -4347,7 +3787,7 @@ $(function () {
                 renderStoredList();
             })
             .fail((xhr) => {
-                storedItems = [];
+                liveState.storedItems = [];
                 renderStoredList();
                 const selectedCategory = getCategoryName();
                 if (selectedCategory) {
@@ -4360,7 +3800,7 @@ $(function () {
         updateQueueSummary();
 
         const items = [...queuedItems].reverse();
-        const emptyHidden = queuedItems.length > 0 ? 'hidden' : '';
+        const emptyHidden = liveState.queuedItems.length > 0 ? 'hidden' : '';
         const html = items
             .map((item) => {
                 const uploadMeta = getUploadStateMeta(item.uploadState || 'waiting');
@@ -4421,41 +3861,41 @@ $(function () {
             ${html}
         `);
 
-        queuedItems.forEach((item) => {
+        liveState.queuedItems.forEach((item) => {
             updateQueueItemProgress(item.id, 0, item.durationMs || 1000);
             setQueueItemUploadState(item.id, item.uploadState || 'waiting');
         });
 
-        if (activeAudioId) {
-            setQueueItemPlaybackState(activeAudioId, true);
+        if (liveState.activeAudioId) {
+            setQueueItemPlaybackState(liveState.activeAudioId, true);
         }
     };
 
     const updateActiveProgress = () => {
-        if (!isRecording || !segmentStartedAt) {
+        if (!liveState.isRecording || !liveState.segmentStartedAt) {
             return;
         }
 
-        const elapsed = Date.now() - segmentStartedAt;
+        const elapsed = Date.now() - liveState.segmentStartedAt;
         const percent = Math.min(100, (elapsed / segmentLengthMs) * 100);
         const clipRange = getCurrentClipRange();
 
         $progress.css('width', `${percent}%`);
-        $progressLabel.text(formatClock(Date.now() - sessionStartedAt));
+        $progressLabel.text(formatClock(Date.now() - liveState.sessionStartedAt));
         $activeName.text('Recording');
         $activeNote.text(clipRange);
     };
 
     const createQueuedItem = (blob, durationMs) => {
         const url = URL.createObjectURL(blob);
-        const clipStartMs = Math.max(0, segmentStartedAt - sessionStartedAt);
+        const clipStartMs = Math.max(0, liveState.segmentStartedAt - liveState.sessionStartedAt);
         const clipEndMs = clipStartMs + durationMs;
-        const categoryName = activeCategoryName || getCategoryName();
+        const categoryName = liveState.activeCategoryName || getCategoryName();
         const languageCode = getLanguageCode();
-        const speakerSessionId = activeSpeakerSessionId || createSpeakerSessionId();
-        const finalizeSession = !isRecording;
+        const speakerSessionId = liveState.activeSpeakerSessionId || createSpeakerSessionId();
+        const finalizeSession = !liveState.isRecording;
 
-        queuedItems.push({
+        liveState.queuedItems.push({
             id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
             index: Math.floor(clipStartMs / segmentLengthMs) + 1,
             url,
@@ -4472,7 +3912,7 @@ $(function () {
         });
 
         if (finalizeSession) {
-            activeSpeakerSessionId = '';
+            liveState.activeSpeakerSessionId = '';
         }
 
         renderQueue();
@@ -4480,12 +3920,12 @@ $(function () {
     };
 
     const finishSegment = () => {
-        if (!recorder) {
+        if (!liveState.recorder) {
             return;
         }
 
-        const currentRecorder = recorder;
-        recorder = null;
+        const currentRecorder = liveState.recorder;
+        liveState.recorder = null;
 
         if (currentRecorder.state !== 'inactive') {
             currentRecorder.stop();
@@ -4493,41 +3933,41 @@ $(function () {
     };
 
     const startSegment = () => {
-        if (!stream) {
+        if (!liveState.stream) {
             return;
         }
 
-        activeParts = [];
+        liveState.activeParts = [];
 
-        if (!sessionStartedAt) {
-            sessionStartedAt = Date.now();
+        if (!liveState.sessionStartedAt) {
+            liveState.sessionStartedAt = Date.now();
         }
 
-        segmentStartedAt = Date.now();
-        segmentIndex += 1;
+        liveState.segmentStartedAt = Date.now();
+        liveState.segmentIndex += 1;
 
-        recorder = new MediaRecorder(stream);
-        recorder.addEventListener('dataavailable', (event) => {
+        liveState.recorder = new MediaRecorder(liveState.stream);
+        liveState.recorder.addEventListener('dataavailable', (event) => {
             if (event.data && event.data.size > 0) {
-                activeParts.push(event.data);
+                liveState.activeParts.push(event.data);
             }
         });
-        recorder.addEventListener('stop', () => {
-            clearTimeout(autoStopTimer);
-            autoStopTimer = null;
+        liveState.recorder.addEventListener('stop', () => {
+            clearTimeout(liveState.autoStopTimer);
+            liveState.autoStopTimer = null;
 
-            const durationMs = Math.max(Date.now() - segmentStartedAt, 1);
-            const blob = activeParts.length ? new Blob(activeParts, { type: recorder?.mimeType || 'audio/webm' }) : null;
-            activeParts = [];
+            const durationMs = Math.max(Date.now() - liveState.segmentStartedAt, 1);
+            const blob = liveState.activeParts.length ? new Blob(liveState.activeParts, { type: liveState.recorder?.mimeType || 'audio/webm' }) : null;
+            liveState.activeParts = [];
 
             if (blob && blob.size > 0) {
                 createQueuedItem(blob, durationMs);
-            } else if (!isRecording && activeSpeakerSessionId) {
-                releaseSpeakerSession(activeSpeakerSessionId);
-                activeSpeakerSessionId = '';
+            } else if (!liveState.isRecording && liveState.activeSpeakerSessionId) {
+                releaseSpeakerSession(liveState.activeSpeakerSessionId);
+                liveState.activeSpeakerSessionId = '';
             }
 
-            if (isRecording) {
+            if (liveState.isRecording) {
                 startSegment();
             } else {
                 $progress.css('width', '0%');
@@ -4535,55 +3975,55 @@ $(function () {
                 $activeName.text('Ready');
                 $activeNote.text('');
 
-                if (stream) {
-                    stream.getTracks().forEach((track) => track.stop());
-                    stream = null;
+                if (liveState.stream) {
+                    liveState.stream.getTracks().forEach((track) => track.stop());
+                    liveState.stream = null;
                 }
 
-                sessionStartedAt = 0;
-                segmentStartedAt = 0;
-                segmentIndex = 0;
+                liveState.sessionStartedAt = 0;
+                liveState.segmentStartedAt = 0;
+                liveState.segmentIndex = 0;
             }
         });
 
-        recorder.start();
+        liveState.recorder.start();
         setRecordingUi();
         updateActiveProgress();
-        progressTimer = progressTimer || window.setInterval(updateActiveProgress, 100);
-        autoStopTimer = window.setTimeout(() => {
-            if (isRecording) {
+        liveState.progressTimer = liveState.progressTimer || window.setInterval(updateActiveProgress, 100);
+        liveState.autoStopTimer = window.setTimeout(() => {
+            if (liveState.isRecording) {
                 finishSegment();
             }
         }, segmentLengthMs);
     };
 
     const stopRecording = () => {
-        isRecording = false;
+        liveState.isRecording = false;
         setIdleUi();
 
-        if (autoStopTimer) {
-            clearTimeout(autoStopTimer);
-            autoStopTimer = null;
+        if (liveState.autoStopTimer) {
+            clearTimeout(liveState.autoStopTimer);
+            liveState.autoStopTimer = null;
         }
 
-        if (progressTimer) {
-            clearInterval(progressTimer);
-            progressTimer = null;
+        if (liveState.progressTimer) {
+            clearInterval(liveState.progressTimer);
+            liveState.progressTimer = null;
         }
 
-        if (recorder && recorder.state !== 'inactive') {
+        if (liveState.recorder && liveState.recorder.state !== 'inactive') {
             finishSegment();
             return;
         }
 
-        if (stream) {
-            stream.getTracks().forEach((track) => track.stop());
-            stream = null;
+        if (liveState.stream) {
+            liveState.stream.getTracks().forEach((track) => track.stop());
+            liveState.stream = null;
         }
 
-        sessionStartedAt = 0;
-        segmentStartedAt = 0;
-        segmentIndex = 0;
+        liveState.sessionStartedAt = 0;
+        liveState.segmentStartedAt = 0;
+        liveState.segmentIndex = 0;
     };
 
     const startRecording = async () => {
@@ -4598,43 +4038,43 @@ $(function () {
             return;
         }
 
-        if (uploadPaused) {
+        if (liveState.uploadPaused) {
             setSupportMessage('Saving paused');
             notifyError('Saving is paused because the last clip could not be stored.');
             return;
         }
 
         try {
-            activeCategoryName = chosenCategory;
-            activeSpeakerSessionId = activeSpeakerSessionId || createSpeakerSessionId();
-            setCategoryBadge(activeCategoryName);
+            liveState.activeCategoryName = chosenCategory;
+            liveState.activeSpeakerSessionId = liveState.activeSpeakerSessionId || createSpeakerSessionId();
+            setCategoryBadge(liveState.activeCategoryName);
             syncRecordingTimeline();
 
-            if (!stream) {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            if (!liveState.stream) {
+                liveState.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             }
 
-            if (!sessionStartedAt) {
-                sessionStartedAt = Date.now();
+            if (!liveState.sessionStartedAt) {
+                liveState.sessionStartedAt = Date.now();
             }
 
-            isRecording = true;
+            liveState.isRecording = true;
             startSegment();
         } catch (error) {
             setSupportMessage('Microphone blocked');
             notifyError('Microphone access is blocked. Please allow it to record audio.');
             setIdleUi();
-            isRecording = false;
+            liveState.isRecording = false;
 
-            if (stream) {
-                stream.getTracks().forEach((track) => track.stop());
-                stream = null;
+            if (liveState.stream) {
+                liveState.stream.getTracks().forEach((track) => track.stop());
+                liveState.stream = null;
             }
         }
     };
 
     $button.on('click', function () {
-        if (isRecording) {
+        if (liveState.isRecording) {
             stopRecording();
         } else {
             startRecording();
@@ -4642,11 +4082,11 @@ $(function () {
     });
 
     $categoryInput.on('input change', function () {
-        if (isRecording) {
+        if (liveState.isRecording) {
             return;
         }
 
-        liveCleanerStatus = 'Waiting';
+        liveState.liveCleanerStatus = 'Waiting';
         syncCategoryUi();
         renderStoredList();
         refreshCategorySuggestions();
@@ -4659,12 +4099,12 @@ $(function () {
 
         event.preventDefault();
 
-        if (isRecording) {
+        if (liveState.isRecording) {
             return;
         }
 
-        activeCategoryName = getCategoryName();
-        liveCleanerStatus = 'Waiting';
+        liveState.activeCategoryName = getCategoryName();
+        liveState.liveCleanerStatus = 'Waiting';
         closeCategorySuggestions();
         syncCategoryUi();
         renderStoredList();
@@ -4672,7 +4112,7 @@ $(function () {
     });
 
     $categoryInput.on('focus click', function () {
-        if (!isRecording) {
+        if (!liveState.isRecording) {
             openCategorySuggestions();
         }
     });
@@ -4691,8 +4131,8 @@ $(function () {
         }
 
         $categoryInput.val(category);
-        activeCategoryName = category;
-        liveCleanerStatus = 'Waiting';
+        liveState.activeCategoryName = category;
+        liveState.liveCleanerStatus = 'Waiting';
         syncCategoryUi();
         renderStoredList();
         closeCategorySuggestions();
@@ -4701,7 +4141,7 @@ $(function () {
     $queue.on('click', '[data-action="play"]', function () {
         const $row = $(this).closest('[data-queue-item]');
         const id = $row.data('queue-item');
-        const item = queuedItems.find((entry) => entry.id === id);
+        const item = liveState.queuedItems.find((entry) => entry.id === id);
 
         if (item) {
             playQueuedItem(item);
@@ -4722,7 +4162,7 @@ $(function () {
 
     window.addEventListener('pagehide', () => {
         const sessionIds = new Set([
-            activeSpeakerSessionId,
+            liveState.activeSpeakerSessionId,
             ...queuedItems.map((item) => item.speakerSessionId),
         ].filter(Boolean));
         sessionIds.forEach((sessionId) => releaseSpeakerSession(sessionId, true));
@@ -4731,7 +4171,7 @@ $(function () {
     $storedList.on('click', '[data-stored-action="play"]', function () {
         const $row = $(this).closest('[data-stored-item]');
         const id = $row.data('stored-item');
-        const item = storedItems.find((entry) => String(entry.id) === String(id));
+        const item = liveState.storedItems.find((entry) => String(entry.id) === String(id));
 
         if (item) {
             playStoredItem(item);
@@ -4741,7 +4181,7 @@ $(function () {
     $storedList.on('click', '[data-stored-action="remove"]', function () {
         const $row = $(this).closest('[data-stored-item]');
         const id = $row.data('stored-item');
-        const item = storedItems.find((entry) => String(entry.id) === String(id));
+        const item = liveState.storedItems.find((entry) => String(entry.id) === String(id));
 
         if (item) {
             deleteStoredItem(item);

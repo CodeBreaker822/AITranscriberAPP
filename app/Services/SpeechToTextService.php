@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\TranscriptionEngine;
 use Illuminate\Http\UploadedFile;
 use SplFileInfo;
 
@@ -17,7 +18,7 @@ class SpeechToTextService
      */
     public function transcribe(UploadedFile|string|SplFileInfo $audio, array $options = []): array
     {
-        if (($options['engine'] ?? 'online') === 'offline') {
+        if (TranscriptionEngine::fromOption($options['engine'] ?? null) === TranscriptionEngine::Offline) {
             return $this->offlineWhisper->transcribe($audio, $options);
         }
 
@@ -35,7 +36,7 @@ class SpeechToTextService
 
     public function releaseOfflineWorker(array $options = []): void
     {
-        if (($options['engine'] ?? 'online') === 'offline') {
+        if (TranscriptionEngine::fromOption($options['engine'] ?? null) === TranscriptionEngine::Offline) {
             $this->offlineWhisper->releaseWorker();
         }
     }

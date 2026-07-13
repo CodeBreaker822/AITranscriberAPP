@@ -29,6 +29,7 @@ return [
     'transcription_api' => [
         'base_url' => env('TRANSCRIPTION_API_BASE_URL', 'https://dilgaims.site/api'),
         'timeout' => env('TRANSCRIPTION_API_TIMEOUT', 1800),
+        'max_upload_bytes' => env('TRANSCRIPTION_API_MAX_UPLOAD_BYTES', 268435456),
     ],
 
     'audio' => [

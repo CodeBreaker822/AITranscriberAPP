@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Enums\TranscriptionEngine;
 use App\Services\HostedTranscriptionApiService;
 use App\Services\OfflineWhisperService;
 use App\Services\SpeechToTextService;
@@ -23,7 +24,7 @@ class SpeechToTextServiceTest extends TestCase
         $offline = Mockery::mock(OfflineWhisperService::class);
         $offline->shouldReceive('transcribe')
             ->once()
-            ->with('prepared.wav', ['engine' => 'offline', 'language_code' => 'en'])
+            ->with('prepared.wav', ['engine' => TranscriptionEngine::Offline->value, 'language_code' => 'en'])
             ->andReturn([
                 'text' => 'Offline result.',
                 'timestamps' => [],
@@ -32,7 +33,7 @@ class SpeechToTextServiceTest extends TestCase
             ]);
 
         $result = (new SpeechToTextService($hosted, $offline))->transcribe('prepared.wav', [
-            'engine' => 'offline',
+            'engine' => TranscriptionEngine::Offline->value,
             'language_code' => 'en',
         ]);
 
