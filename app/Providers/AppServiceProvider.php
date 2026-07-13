@@ -30,9 +30,14 @@ class AppServiceProvider extends ServiceProvider
                 'resourceProfile' => $settings->resourceProfile(),
                 'hasOfflineTranscriptionModel' => $offlineModels->hasSupportedInstalledModel(),
                 'speechProvider' => $settings->speechToTextProvider(),
+                'audioChunkSeconds' => $settings->audioChunkSeconds(),
                 'transcribeMaxBatchDurationMs' => $settings->transcribeMaxBatchDurationMs() ?? 1_200_000,
                 'transcribeMaxBatchClips' => $settings->transcribeMaxBatchClips() ?? 20,
             ]);
+        });
+
+        View::composer('pages.upload', function ($view): void {
+            $view->with('audioChunkSeconds', app(AppSettingsService::class)->audioChunkSeconds());
         });
 
         View::composer('components.app-header', function ($view): void {

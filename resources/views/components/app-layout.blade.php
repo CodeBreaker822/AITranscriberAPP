@@ -38,6 +38,7 @@
         data-resource-memory-budget-mb="{{ $resourceProfile['memory_budget_mb'] }}"
         data-resource-gpu-available="{{ $resourceProfile['gpu_available'] ? 'true' : 'false' }}"
         data-resource-gpu-vram-budget-mb="{{ $resourceProfile['gpu_vram_budget_mb'] }}"
+        data-audio-chunk-seconds="{{ $audioChunkSeconds }}"
         @if ($activePage === 'live')
             data-upload-url="{{ route('audio-chunks.store') }}"
             data-stored-url="{{ route('audio-chunks.index') }}"

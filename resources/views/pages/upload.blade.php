@@ -88,7 +88,7 @@
                                 </select>
                             </label>
 
-                            <input type="hidden" name="chunk_seconds" value="300" data-upload-chunk-size>
+                            <input type="hidden" name="chunk_seconds" value="{{ $audioChunkSeconds }}" data-upload-chunk-size>
 
                         </div>
 
@@ -168,7 +168,7 @@
                         <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800/80">
                             <div data-cleaner-progress-bar class="h-full w-0 rounded-full bg-cyan-300 transition-all duration-300"></div>
                         </div>
-                        <p data-cleaner-progress-note class="mt-1 text-[0.66rem] leading-4 text-slate-400">The polished transcript will be prepared in five-minute batches after raw transcription is ready.</p>
+                        <p data-cleaner-progress-note class="mt-1 text-[0.66rem] leading-4 text-slate-400">The polished transcript will be prepared after raw transcription is ready.</p>
                     </div>
                 </section>
             </aside>

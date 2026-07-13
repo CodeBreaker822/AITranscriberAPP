@@ -31,6 +31,10 @@ return [
         'timeout' => env('TRANSCRIPTION_API_TIMEOUT', 1800),
     ],
 
+    'audio' => [
+        'chunk_seconds' => env('AI_TRANSCRIBER_AUDIO_CHUNK_SECONDS', 60),
+    ],
+
     'silero_vad' => [
         'binary' => env('SILERO_VAD_BINARY'),
         'threshold' => env('SILERO_VAD_THRESHOLD', 0.5),

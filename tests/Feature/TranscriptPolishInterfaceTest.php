@@ -65,6 +65,7 @@ class TranscriptPolishInterfaceTest extends TestCase
             $response
                 ->assertSee('Audio to Text Converter')
                 ->assertDontSee('Upload a long recording once, then process it in one-minute sections for steady progress and cleaner retries.');
+            $response->assertSee('data-audio-chunk-seconds="60"', false);
             $response->assertSee('data-upload-language', false);
             $this->assertSame(1, substr_count($html, 'data-upload-transcript-list'));
             $this->assertSame(1, substr_count($html, 'data-upload-queue-list'));
@@ -84,6 +85,6 @@ class TranscriptPolishInterfaceTest extends TestCase
 
         $this->get('/upload')
             ->assertOk()
-            ->assertSee('five-minute batches');
+            ->assertSee('data-audio-chunk-seconds="60"', false);
     }
 }

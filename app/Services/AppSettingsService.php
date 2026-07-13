@@ -165,6 +165,11 @@ class AppSettingsService
         return $clips > 0 ? $clips : null;
     }
 
+    public function audioChunkSeconds(): int
+    {
+        return $this->clampInt((int) config('services.audio.chunk_seconds', 60), 1, 20 * 60);
+    }
+
     public function speechToTextProvider(): string
     {
         $provider = $this->get(self::SPEECH_TO_TEXT_PROVIDER);

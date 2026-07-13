@@ -1,5 +1,16 @@
 $(function () {
     const $body = $('body');
+    const audioChunkSeconds = Math.max(1, Number($body.data('audio-chunk-seconds') || 60) || 60);
+    const audioChunkLengthMs = audioChunkSeconds * 1000;
+    const audioChunkDurationLabel = (() => {
+        if (audioChunkSeconds % 60 === 0) {
+            const minutes = audioChunkSeconds / 60;
+
+            return minutes === 1 ? 'one-minute' : `${minutes}-minute`;
+        }
+
+        return audioChunkSeconds === 1 ? 'one-second' : `${audioChunkSeconds}-second`;
+    })();
     const browserDownloadFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
         const body = /application\/(vnd\.ms-excel|msword)/i.test(mimeType)
             ? `\ufeff${content}`
@@ -659,9 +670,8 @@ $(function () {
 
         const formatRelativeClock = (milliseconds) => `+${formatClock(milliseconds)}`;
 
-        const fixedChunkSeconds = 300;
-        const getChunkLengthMs = () => fixedChunkSeconds * 1000;
-        $chunkSize.val(String(fixedChunkSeconds));
+        const getChunkLengthMs = () => audioChunkLengthMs;
+        $chunkSize.val(String(audioChunkSeconds));
 
         const getUploadPrepareConcurrency = () => Math.max(1, Math.min(
             preparedSections.length || 1,
@@ -1153,7 +1163,7 @@ $(function () {
 
         const getCleanerBatches = () => {
             const batches = new Map();
-            const polishWindowMs = 5 * 60 * 1000;
+            const polishWindowMs = audioChunkLengthMs;
 
             getUploadStoredItemsForCategory().forEach((section) => {
                 const startMs = Math.max(0, Number(section.clipStartMs || section.clip_start_ms || 0));
@@ -1194,7 +1204,7 @@ $(function () {
             $cleanerProgressBar.css('width', `${percent}%`);
 
             if (cleanerStatus === 'Polishing') {
-                $cleanerProgressNote.text(`Polishing ${total} five-minute ${total === 1 ? 'batch' : 'batches'}.`);
+                $cleanerProgressNote.text(`Polishing ${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch' : 'batches'}.`);
                 return;
             }
 
@@ -1209,8 +1219,8 @@ $(function () {
             }
 
             $cleanerProgressNote.text(total > 0
-                ? `${total} five-minute ${total === 1 ? 'batch is' : 'batches are'} ready to polish.`
-                : 'The polished transcript will be prepared in five-minute batches after raw transcription is ready.');
+                ? `${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch is' : 'batches are'} ready to polish.`
+                : `The polished transcript will be prepared in ${audioChunkDurationLabel} batches after raw transcription is ready.`);
         };
 
         const renderSectionProgress = () => {
@@ -2998,7 +3008,7 @@ $(function () {
     const playUrlBase = String($body.data('play-url-base') || '');
     const deleteUrlBase = String($body.data('delete-url-base') || '');
     const defaultUserId = Number($body.data('default-user-id') || 1);
-    const segmentLengthMs = 5 * 60 * 1000;
+    const segmentLengthMs = audioChunkLengthMs;
     const supportsRecorder = Boolean(navigator.mediaDevices && window.MediaRecorder);
     const liveTimelineStorageKey = 'ai-transcriber-live-timeline-cursors';
 
@@ -3458,7 +3468,7 @@ $(function () {
             return 0;
         }
 
-        return new Set(items.map((item) => Math.floor(Number(item.clipStartMs || 0) / (5 * 60 * 1000)))).size;
+        return new Set(items.map((item) => Math.floor(Number(item.clipStartMs || 0) / audioChunkLengthMs))).size;
     };
 
     const updateLiveCleanerProgress = () => {
@@ -3484,14 +3494,14 @@ $(function () {
         $liveCleanerProgressBar.css('width', `${percent}%`);
 
         if (liveCleanerStatus === 'Polishing') {
-            $liveCleanerProgressNote.text(`Polishing ${total} five-minute ${total === 1 ? 'batch' : 'batches'}.`);
+            $liveCleanerProgressNote.text(`Polishing ${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch' : 'batches'}.`);
         } else if (liveCleanerStatus === 'Complete') {
             $liveCleanerProgressNote.text('The polished transcript is ready for viewing and export.');
         } else if (liveCleanerStatus === 'Failed') {
             $liveCleanerProgressNote.text('Polishing failed. You can polish the transcript again.');
         } else {
             $liveCleanerProgressNote.text(total > 0
-                ? `${total} five-minute ${total === 1 ? 'batch is' : 'batches are'} ready to polish.`
+                ? `${total} ${audioChunkDurationLabel} ${total === 1 ? 'batch is' : 'batches are'} ready to polish.`
                 : 'Record or load a raw transcript before polishing.');
         }
     };

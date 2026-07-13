@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\SpeechToTextException;
 use App\Services\AudioFileChunkerService;
+use App\Services\AppSettingsService;
 use App\Services\ServiceUserMessage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Throwable;
 
 class UploadedAudioTranscriptionController extends Controller
@@ -15,18 +17,21 @@ class UploadedAudioTranscriptionController extends Controller
     public function store(
         Request $request,
         AudioFileChunkerService $chunker,
+        AppSettingsService $settings,
     ): JsonResponse {
         @set_time_limit(0);
+
+        $audioChunkSeconds = $settings->audioChunkSeconds();
 
         $validated = $request->validate([
             'audio_file' => ['nullable', 'required_without:local_path', 'file'],
             'local_path' => ['nullable', 'required_without:audio_file', 'string'],
-            'chunk_seconds' => ['nullable', 'integer', 'in:300,600,900,1200'],
+            'chunk_seconds' => ['nullable', 'integer', Rule::in([$audioChunkSeconds])],
         ]);
 
         $file = $request->file('audio_file');
         $localPath = (string) ($validated['local_path'] ?? '');
-        $chunkSeconds = (int) ($validated['chunk_seconds'] ?? 300);
+        $chunkSeconds = (int) ($validated['chunk_seconds'] ?? $audioChunkSeconds);
 
         try {
             $session = trim($localPath) !== ''
