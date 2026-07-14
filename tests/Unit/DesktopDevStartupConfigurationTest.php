@@ -74,4 +74,16 @@ class DesktopDevStartupConfigurationTest extends TestCase
         $this->assertStringContainsString('AI_TRANSCRIBER_GPU_VRAM_MB', $profile);
         $this->assertStringNotContainsString('availableMemoryMb * 2', $profile);
     }
+
+    public function test_desktop_startup_clears_stale_queue_jobs_before_starting_worker(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $main = file_get_contents($root.'/src-tauri/src/main.rs');
+        $devLauncher = file_get_contents($root.'/scripts/dev-local.mjs');
+
+        $this->assertLessThan(strpos($main, '.arg("queue:work")'), strpos($main, 'clear_pending_queue('));
+        $this->assertStringContainsString('"Pending queue jobs cleared before worker startup."', $main);
+        $this->assertLessThan(strpos($devLauncher, "start('Queue worker'"), strpos($devLauncher, "'queue:clear'"));
+        $this->assertStringContainsString("'--queue=default'", $devLauncher);
+    }
 }

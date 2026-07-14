@@ -142,13 +142,13 @@
                         </div>
                         <p data-audio-support class="mt-1 text-[0.66rem] uppercase tracking-[0.16em] text-slate-500">Ready</p>
                         <div class="mt-1.5 flex flex-nowrap items-center gap-1">
-                            <button type="button" data-live-continue class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white transition hover:border-cyan-300/30 hover:bg-cyan-300/10 disabled:cursor-not-allowed disabled:opacity-50">
+                            <button type="button" data-live-continue disabled class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-white transition hover:border-cyan-300/30 hover:bg-cyan-300/10 disabled:cursor-not-allowed disabled:opacity-50">
                                 Continue
                             </button>
-                            <button type="button" data-live-retry class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-amber-300/20 bg-amber-300/10 px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-amber-100 transition hover:border-amber-300/30 hover:bg-amber-300/15 disabled:cursor-not-allowed disabled:opacity-50">
+                            <button type="button" data-live-retry disabled class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-amber-300/20 bg-amber-300/10 px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-amber-100 transition hover:border-amber-300/30 hover:bg-amber-300/15 disabled:cursor-not-allowed disabled:opacity-50">
                                 Retry
                             </button>
-                            <button type="button" data-live-cancel class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-rose-400/20 bg-rose-400/10 px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-rose-100 transition hover:border-rose-400/30 hover:bg-rose-400/15 disabled:cursor-not-allowed disabled:opacity-50">
+                            <button type="button" data-live-cancel disabled class="inline-flex min-h-7 flex-1 cursor-pointer items-center justify-center rounded-lg border border-rose-400/20 bg-rose-400/10 px-1.5 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-rose-100 transition hover:border-rose-400/30 hover:bg-rose-400/15 disabled:cursor-not-allowed disabled:opacity-50">
                                 Cancel
                             </button>
                         </div>

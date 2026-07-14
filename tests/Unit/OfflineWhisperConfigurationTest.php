@@ -80,8 +80,8 @@ class OfflineWhisperConfigurationTest extends TestCase
         $this->assertStringContainsString('fn cancel_offline_whisper(progress_id: String)', $main);
         $this->assertStringContainsString('"cancel_offline_whisper"', $build);
         $this->assertStringContainsString("invoke('cancel_offline_whisper'", $frontend);
-        $this->assertStringContainsString('cancelWhisperProgress(activeSectionProgressId)', $frontend);
-        $this->assertStringContainsString('cancelWhisperProgress(activeWhisperProgressId)', $frontend);
+        $this->assertStringContainsString('cancelWhisperProgress(uploadState.activeSectionProgressId)', $frontend);
+        $this->assertStringContainsString('cancelWhisperProgress(liveState.activeWhisperProgressId)', $frontend);
     }
 
     public function test_offline_worker_retries_transport_failures_and_recovers_from_panics(): void

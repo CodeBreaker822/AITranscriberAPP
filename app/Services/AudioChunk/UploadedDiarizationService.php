@@ -113,8 +113,12 @@ class UploadedDiarizationService
                                 'status' => AudioChunkStatus::DiarizationFailed->value,
                                 'updated_at' => now(),
                             ]);
-                    } catch (\Throwable) {
-                        // If SQLite is momentarily locked, do not block hosted transcription.
+                    } catch (\Throwable $statusException) {
+                        Log::warning('Prepared upload diarization failure status could not be persisted.', [
+                            'message' => $statusException->getMessage(),
+                            'upload_session_id' => $uploadSessionId,
+                            'audio_chunk_id' => $audioChunkId,
+                        ]);
                     }
                 }
 

@@ -188,11 +188,6 @@ class UploadedSectionIngestion
 
         if ($preparedAudioChunkId > 0) {
             $this->chunker->cleanupProcessedFiles(...array_values(array_filter([$segment], 'is_array')));
-
-            if ($finalizeSession) {
-                DiarizeUploadedAudioBatch::dispatch([], $speakerSessionId, $validated['upload_session_id'], true)
-                    ->delay(now()->addSeconds(5));
-            }
         } else {
             $this->cleanupUploadedSectionFiles(
                 $validated['upload_session_id'],

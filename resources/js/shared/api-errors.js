@@ -50,6 +50,18 @@ export const buildUploadSessionErrorMessage = (xhr) => {
         return 'Choose a valid audio file before processing.';
     }
 
+    if (fieldErrors.local_path?.length) {
+        return 'AITranscriber could not read that selected file. Choose the file again and try.';
+    }
+
+    if (fieldErrors.chunk_seconds?.length) {
+        return 'The upload chunk length is no longer valid. Refresh the app and try again.';
+    }
+
+    if (fieldErrors.duration_ms?.length) {
+        return 'AITranscriber could not measure this audio file. Choose the file again and try.';
+    }
+
     if (serverMessage) {
         return serverMessage;
     }

@@ -527,6 +527,26 @@ fn clear_compiled_views(
     )
 }
 
+fn clear_pending_queue(
+    paths: &LaravelPaths,
+    php_path: PathBuf,
+    artisan_path: PathBuf,
+) -> Result<(), String> {
+    run_artisan(
+        paths,
+        php_path,
+        artisan_path,
+        &[
+            "queue:clear",
+            "database",
+            "--queue=default",
+            "--force",
+            "--no-interaction",
+        ],
+        "pending queue cleanup",
+    )
+}
+
 fn run_artisan(
     paths: &LaravelPaths,
     php_path: PathBuf,
@@ -693,6 +713,8 @@ fn start_laravel(app: &tauri::AppHandle) -> Result<(), String> {
     append_startup_log(&paths, "Bundled default settings sync completed.");
     clear_compiled_views(&paths, php_path.clone(), artisan_path.clone())?;
     append_startup_log(&paths, "Compiled Blade views cleared.");
+    clear_pending_queue(&paths, php_path.clone(), artisan_path.clone())?;
+    append_startup_log(&paths, "Pending queue jobs cleared before worker startup.");
 
     let mut command = laravel_command(php_path, artisan_path, &paths);
     let stderr_log = startup_log

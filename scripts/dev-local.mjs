@@ -130,6 +130,7 @@ try {
     await runOnce(['scripts/clear-dev-port.php', '5173']);
     await runOnce(['artisan', 'view:clear', '--no-ansi']);
     await runOnce(['artisan', 'config:clear', '--no-ansi']);
+    await runOnce(['artisan', 'queue:clear', 'database', '--queue=default', '--force', '--no-interaction']);
 
     start('Vite server', process.execPath, [vite]);
     await waitForVite();

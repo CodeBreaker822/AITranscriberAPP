@@ -43,7 +43,7 @@ class AudioFileChunkerService
     /**
      * @return array{session_id: string, directory: string, source_path: string, duration_ms: int}
      */
-    public function createSessionFromPath(string $sourcePath): array
+    public function createSessionFromPath(string $sourcePath, int $knownDurationMs = 0): array
     {
         $sourcePath = trim($sourcePath);
 
@@ -62,7 +62,9 @@ class AudioFileChunkerService
         $workDirectory = $this->sessionDirectory($sessionId);
         File::ensureDirectoryExists($workDirectory);
 
-        $durationMs = max(1, (int) round($this->probeDurationSeconds($realPath) * 1000));
+        $durationMs = $knownDurationMs > 0
+            ? $knownDurationMs
+            : max(1, (int) round($this->probeDurationSeconds($realPath) * 1000));
 
         file_put_contents($workDirectory.DIRECTORY_SEPARATOR.'session.json', json_encode([
             'source_path' => $realPath,

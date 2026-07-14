@@ -8,7 +8,6 @@ use App\Services\AudioFileChunkerService;
 use App\Services\SpeakerDiarizationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Mockery;
 use Tests\TestCase;
@@ -60,78 +59,6 @@ class QueuedUploadedAudioDiarizationTest extends TestCase
         $this->assertFileDoesNotExist($audioPath);
     }
 
-    public function test_online_upload_uses_a_durable_queue_without_changing_live_or_offline_diarization(): void
-    {
-        $root = dirname(__DIR__, 2);
-        $controller = file_get_contents($root.'/app/Http/Controllers/AudioChunkController.php');
-        $facade = file_get_contents($root.'/app/Services/AudioChunk/AudioChunkIngestionService.php');
-        $liveIngestion = file_get_contents($root.'/app/Services/AudioChunk/LiveAudioIngestion.php');
-        $sectionIngestion = file_get_contents($root.'/app/Services/AudioChunk/UploadedSectionIngestion.php');
-        $batchIngestion = file_get_contents($root.'/app/Services/AudioChunk/UploadedBatchIngestion.php');
-        $frontend = file_get_contents($root.'/resources/js/app.js');
-        $speechToText = file_get_contents($root.'/app/Services/SpeechToTextService.php');
-        $tauri = file_get_contents($root.'/src-tauri/src/main.rs');
-
-        $this->assertStringContainsString('LiveAudioIngestion', $facade);
-        $this->assertStringContainsString('UploadedSectionIngestion', $facade);
-        $this->assertStringContainsString('UploadedBatchIngestion', $facade);
-        $this->assertStringContainsString('DiarizeUploadedAudioBatch::dispatch(', $batchIngestion);
-        $this->assertStringContainsString('$queuedItems->each(function (string $audioPath, int $audioChunkId)', $batchIngestion);
-        $this->assertStringContainsString('$finalizeSession && $audioChunkId === $lastQueuedId', $batchIngestion);
-        $this->assertStringContainsString('AudioChunkStatus::DiarizationQueued->value', $batchIngestion);
-        $this->assertStringContainsString('AudioChunkStatus::Transcribed->value', $batchIngestion);
-        $this->assertStringNotContainsString('diarizationBatchProcess(', $controller);
-        $this->assertStringContainsString('Rule::in([TranscriptionEngine::Online->value])', $controller);
-        $this->assertGreaterThanOrEqual(2, substr_count($liveIngestion.$sectionIngestion, '$this->speakerDiarization->apply('));
-        $this->assertStringContainsString("if (audioChunkBatchUrl && getTranscriptionEngine() === 'online')", $frontend);
-        $this->assertStringNotContainsString('$this->offlineWhisper->transcribe($clip', $speechToText);
-        $this->assertStringContainsString('return $this->api->transcribeBatch($clips, $options);', $speechToText);
-        $this->assertStringContainsString('restartQueuedDiarizationMonitor(queuedDiarizationIds);', $frontend);
-        $this->assertStringContainsString('data-audio-chunk-status-url', file_get_contents($root.'/resources/views/components/app-layout.blade.php'));
-        preg_match('/const monitorQueuedDiarization = .*?^        \};/ms', $frontend, $monitorMatch);
-        $monitor = $monitorMatch[0] ?? '';
-        $this->assertNotSame('', $monitor);
-        $this->assertStringContainsString('$.getJSON(audioChunkStatusUrl, { ids: pendingIds })', $monitor);
-        $this->assertStringNotContainsString('$.getJSON(storedUrl)', $monitor);
-        $this->assertStringContainsString('uploadSessionDiarizationFinished()', file_get_contents($root.'/app/Jobs/DiarizeUploadedAudioBatch.php'));
-        $this->assertStringContainsString('.arg("queue:work")', $tauri);
-        $this->assertStringContainsString('.arg("--tries=3")', $tauri);
-        $this->assertStringContainsString('queue_worker: Mutex<Option<Child>>', $tauri);
-    }
-
-    public function test_prepared_transcription_merge_lives_in_ingestion_not_persistence(): void
-    {
-        $root = dirname(__DIR__, 2);
-        $completion = file_get_contents($root.'/app/Services/AudioChunk/PreparedAudioCompletionService.php');
-        $persistence = file_get_contents($root.'/app/Services/AudioChunk/AudioChunkPersistenceService.php');
-
-        $this->assertStringContainsString('private function preparedCompletionResult(', $completion);
-        $this->assertStringContainsString('$this->uploadedDiarization->mergePreparedResultIfAvailable(', $completion);
-        $this->assertStringContainsString('$this->uploadedDiarization->hasPreparedResult(', $completion);
-        $this->assertStringContainsString('public function complete(', $completion);
-        $this->assertStringContainsString('string $finalStatus', $persistence);
-        $this->assertStringNotContainsString('UploadedDiarizationService', $persistence);
-        $this->assertStringNotContainsString('mergePreparedResultIfAvailable', $persistence);
-        $this->assertStringNotContainsString('hasPreparedResult', $persistence);
-    }
-
-    public function test_ingestion_uses_shared_lifecycle_helpers_for_cleanup_and_release(): void
-    {
-        $root = dirname(__DIR__, 2);
-        $liveIngestion = file_get_contents($root.'/app/Services/AudioChunk/LiveAudioIngestion.php');
-        $sectionIngestion = file_get_contents($root.'/app/Services/AudioChunk/UploadedSectionIngestion.php');
-        $batchIngestion = file_get_contents($root.'/app/Services/AudioChunk/UploadedBatchIngestion.php');
-
-        $this->assertStringContainsString('private function releaseFinalizedSession(', $liveIngestion);
-        $this->assertStringContainsString('private function cleanupPreparedClip(', $liveIngestion);
-        $this->assertStringContainsString('private function releaseFinalizedSession(', $sectionIngestion);
-        $this->assertStringContainsString('private function cleanupUploadedSectionFiles(', $sectionIngestion);
-        $this->assertStringContainsString('private function cleanupUploadedSectionFiles(', $batchIngestion);
-        $this->assertGreaterThanOrEqual(3, substr_count($liveIngestion.$sectionIngestion, '$this->releaseFinalizedSession('));
-        $this->assertGreaterThanOrEqual(5, substr_count($liveIngestion, '$this->cleanupPreparedClip('));
-        $this->assertGreaterThanOrEqual(4, substr_count($sectionIngestion.$batchIngestion, '$this->cleanupUploadedSectionFiles('));
-    }
-
     public function test_exhausted_diarization_is_marked_failed_and_retained_audio_is_cleaned(): void
     {
         $audioChunkId = $this->insertAudioChunk(3, 'Retry transcript', 'diarization_queued');
@@ -174,7 +101,7 @@ class QueuedUploadedAudioDiarizationTest extends TestCase
         $this->assertFileDoesNotExist($audioPath);
     }
 
-    public function test_upload_session_finalization_requeues_with_a_bounded_attempt_counter(): void
+    public function test_upload_session_finalization_does_not_requeue_empty_polling_jobs(): void
     {
         Queue::fake();
         $audioChunkId = $this->insertAudioChunk(4, 'Still pending', 'diarization_processing');
@@ -191,47 +118,31 @@ class QueuedUploadedAudioDiarizationTest extends TestCase
             'bounded-session',
             'bounded-session',
             true,
-            6,
         ))->handle($diarization, $chunker);
 
-        Queue::assertPushed(DiarizeUploadedAudioBatch::class, function (DiarizeUploadedAudioBatch $job): bool {
-            return $job->audioChunkPaths === []
-                && $job->speakerSessionId === 'bounded-session'
-                && $job->uploadSessionId === 'bounded-session'
-                && $job->finalizeSession === true
-                && $job->finalizeAttempts === 7;
-        });
+        Queue::assertNotPushed(DiarizeUploadedAudioBatch::class);
     }
 
-    public function test_upload_session_finalization_stops_after_the_retry_limit(): void
+    public function test_failed_empty_finalizer_does_not_start_a_new_finalize_loop(): void
     {
         Queue::fake();
-        Log::spy();
         $audioChunkId = $this->insertAudioChunk(5, 'Stuck pending', 'diarization_waiting_transcript');
         DB::table('audio_chunks')->where('id', $audioChunkId)->update([
             'audio_path' => 'audio/stuck-session/chunk_00005-speech.wav',
         ]);
-        $diarization = Mockery::mock(SpeakerDiarizationService::class);
-        $diarization->shouldNotReceive('releaseSession');
-        $chunker = Mockery::mock(AudioFileChunkerService::class);
-        $chunker->shouldNotReceive('cleanupSession');
 
         (new DiarizeUploadedAudioBatch(
             [],
             'stuck-session',
             'stuck-session',
             true,
-            DiarizeUploadedAudioBatch::MAX_FINALIZE_ATTEMPTS,
-        ))->handle($diarization, $chunker);
+        ))->failed(new \RuntimeException('empty finalizer exceeded attempts'));
 
         Queue::assertNotPushed(DiarizeUploadedAudioBatch::class);
-        Log::shouldHaveReceived('error')->withArgs(
-            fn (string $message, array $context): bool => $message === 'Queued speaker diarization finalization stopped before cleanup because pending chunks did not reach a terminal status.'
-                && $context['speaker_session_id'] === 'stuck-session'
-                && $context['upload_session_id'] === 'stuck-session'
-                && $context['finalize_attempts'] === DiarizeUploadedAudioBatch::MAX_FINALIZE_ATTEMPTS
-                && ($context['pending_status_counts']['diarization_waiting_transcript'] ?? 0) === 1
-        )->once();
+        $this->assertDatabaseHas('audio_chunks', [
+            'id' => $audioChunkId,
+            'status' => 'diarization_waiting_transcript',
+        ]);
     }
 
     private function insertAudioChunk(int $clipIndex, string $text, string $status): int

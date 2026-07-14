@@ -1,6 +1,6 @@
 import { buildDeleteErrorMessage, buildStorageLoadErrorMessage, buildUploadErrorMessage, buildUploadSessionErrorMessage } from './shared/api-errors.js';
 import { escapeHtml, notify, notifyError, readNearbyControlValue, withButtonLoading } from './shared/dom.js';
-import { exportTranscriptRows, saveTextExport } from './shared/export-service.js';
+import { exportTranscriptRows } from './shared/export-service.js';
 import { formatBytes, formatClipRange, formatClock, formatRelativeClock, slugify, sortByTimeAscending } from './shared/formatters.js';
 import { clampProgressPercent, createPhaseProgress, phaseProgressAverage, phaseProgressSummary } from './shared/progress.js';
 import {
@@ -8,8 +8,6 @@ import {
     hasUsefulTranscript,
     isUsefulTranscriptText,
     renderTranscriptText,
-    speakerLabel,
-    speakerTurnsFromTimestamps,
 } from './shared/transcripts.js';
 import { createLiveWorkflowState } from './live/live-state.js';
 import { createUploadWorkflowState } from './upload/upload-state.js';
@@ -408,7 +406,7 @@ $(function () {
             }
 
             uploadState.activeUploadPhaseProgress = {
-                ...activeUploadPhaseProgress,
+                ...uploadState.activeUploadPhaseProgress,
                 ...Object.fromEntries(Object.entries(updates).map(([key, value]) => [key, clampProgressPercent(value)])),
             };
 
@@ -565,7 +563,7 @@ $(function () {
             }
 
             uploadState.uploadStoredItems = [
-                ...uploadStoredItems.filter((entry) => String(entry.id) !== String(normalized.id)),
+                ...uploadState.uploadStoredItems.filter((entry) => String(entry.id) !== String(normalized.id)),
                 normalized,
             ];
         };
@@ -862,7 +860,7 @@ $(function () {
 
             if (uploadState.activeUploadPhaseProgress) {
                 uploadState.activeUploadPhaseProgress = {
-                    ...activeUploadPhaseProgress,
+                    ...uploadState.activeUploadPhaseProgress,
                     transcribe: clampProgressPercent(transcribePercent),
                 };
                 renderUploadPhaseProgress(activeLabel);
@@ -1464,7 +1462,7 @@ $(function () {
             if (uploadPrepareBatchUrl) {
                 candidates.forEach(({ index }) => {
                     uploadState.preparedSections[index] = {
-                        ...preparedSections[index],
+                        ...uploadState.preparedSections[index],
                         status: 'Preparing',
                         preparedMeta: 'Preparing audio',
                     };
@@ -1513,7 +1511,7 @@ $(function () {
                                 const audioChunkId = Number(data.audio_chunk_id || 0);
                                 completed += 1;
                                 uploadState.preparedSections[index] = {
-                                    ...preparedSections[index],
+                                    ...uploadState.preparedSections[index],
                                     prepared: true,
                                     noSpeech: skipped,
                                     sourceName: data.source_name || '',
@@ -1542,7 +1540,7 @@ $(function () {
                     candidates.forEach(({ index }) => {
                         if (uploadState.preparedSections[index]?.status === 'Preparing') {
                             uploadState.preparedSections[index] = {
-                                ...preparedSections[index],
+                                ...uploadState.preparedSections[index],
                                 status: 'Failed',
                                 preparedMeta: 'Audio preparation failed',
                             };
@@ -1561,7 +1559,7 @@ $(function () {
                     cursor += 1;
 
                     uploadState.preparedSections[index] = {
-                        ...preparedSections[index],
+                        ...uploadState.preparedSections[index],
                         status: 'Preparing',
                         preparedMeta: 'Preparing audio',
                     };
@@ -1585,7 +1583,7 @@ $(function () {
                         const audioChunkId = Number(data.audio_chunk_id || 0);
                         completed += 1;
                         uploadState.preparedSections[index] = {
-                            ...preparedSections[index],
+                            ...uploadState.preparedSections[index],
                             prepared: true,
                             noSpeech: skipped,
                             sourceName: data.source_name || '',
@@ -1607,7 +1605,7 @@ $(function () {
 
                         failed = true;
                         uploadState.preparedSections[index] = {
-                            ...preparedSections[index],
+                            ...uploadState.preparedSections[index],
                             status: 'Failed',
                             preparedMeta: 'Audio preparation failed',
                         };
@@ -1991,6 +1989,9 @@ $(function () {
 
             if (uploadState.selectedFile?.localPath) {
                 formData.append('local_path', uploadState.selectedFile.localPath);
+                if (uploadState.selectedDurationMs > 0) {
+                    formData.append('duration_ms', String(Math.round(uploadState.selectedDurationMs)));
+                }
             } else {
                 formData.append('audio_file', uploadState.selectedFile);
             }
@@ -2027,7 +2028,7 @@ $(function () {
 
         const selectUploadFile = (file) => {
             uploadState.selectedFile = file;
-            uploadState.selectedDurationMs = 0;
+            uploadState.selectedDurationMs = Number(file?.durationMs || 0);
             uploadState.preparedSections = [];
             uploadState.cleanedSections = [];
             uploadState.cleanerStatus = 'Waiting';
@@ -2599,7 +2600,8 @@ $(function () {
     const deleteUrlBase = String($body.data('delete-url-base') || '');
     const defaultUserId = Number($body.data('default-user-id') || 1);
     const segmentLengthMs = audioChunkLengthMs;
-    const supportsRecorder = Boolean(navigator.mediaDevices && window.MediaRecorder);
+    const supportsMicrophone = Boolean(navigator.mediaDevices?.getUserMedia);
+    const supportsRecorder = Boolean(window.MediaRecorder);
     const liveTimelineStorageKey = 'ai-transcriber-live-timeline-cursors';
 
     if (csrfToken) {
@@ -2615,6 +2617,22 @@ $(function () {
     });
 
     const hasUsefulStoredTranscript = hasUsefulTranscript;
+
+    const getCategoryName = () => String($categoryInput.val() || liveState.activeCategoryName || liveState.categoryName || '').trim();
+
+    const getLanguageCode = () => getTranscriptionEngine() === 'offline'
+        ? 'auto'
+        : String($languageInput.val() || 'multi').trim() || 'multi';
+
+    const normalizeStoredTranscriptItem = (item) => ({
+        ...item,
+        rangeLabel: item.rangeLabel || item.range_label || null,
+        categoryName: item.categoryName || item.category_name || null,
+        playUrl: item.play_url || item.playUrl || `${playUrlBase}/${item.id}/audio`,
+        deleteUrl: item.delete_url || item.deleteUrl || `${deleteUrlBase}/${item.id}`,
+        translatedText: item.translatedText || item.translated_text || null,
+        sourceType: item.sourceType || item.source_type || 'live',
+    });
 
     const loadLiveTimelineCursors = () => {
         try {
@@ -2866,11 +2884,9 @@ $(function () {
     };
 
     const syncRecordButtonState = () => {
-        const shouldDisable = !supportsRecorder;
-
-        $button.prop('disabled', shouldDisable);
-        $button.toggleClass('cursor-not-allowed opacity-60', shouldDisable);
-        $button.toggleClass('hover:scale-[1.01]', !shouldDisable);
+        $button.prop('disabled', false);
+        $button.removeClass('cursor-not-allowed opacity-60');
+        $button.addClass('hover:scale-[1.01]');
     };
 
     const syncCategoryUi = () => {
@@ -2879,7 +2895,9 @@ $(function () {
         if (!liveState.isRecording) {
             syncRecordButtonState();
             if (!liveState.uploadPaused) {
-                setSupportMessage(getCategoryName() ? 'Ready' : 'Choose project');
+                setSupportMessage(!supportsMicrophone || !supportsRecorder
+                    ? 'Unavailable'
+                    : getCategoryName() ? 'Ready' : 'Choose project');
             }
         }
     };
@@ -3088,6 +3106,7 @@ $(function () {
         $categoryInput.prop('disabled', false);
         $languageInput.prop('disabled', false);
         syncCategoryUi();
+        syncLiveControls();
     };
 
     const setRecordingUi = () => {
@@ -3100,6 +3119,7 @@ $(function () {
         $languageInput.prop('disabled', true);
         syncRecordButtonState();
         setSupportMessage(liveState.uploadInFlight ? 'Sending' : 'Live');
+        syncLiveControls();
     };
 
     const updateQueueSummary = () => {
@@ -3585,7 +3605,7 @@ $(function () {
         const removableItems = liveState.queuedItems.filter((item) => ['waiting', 'sending'].includes(item.uploadState));
         const sessionIds = [...new Set([
             liveState.activeSpeakerSessionId,
-            ...queuedItems.map((item) => item.speakerSessionId),
+            ...liveState.queuedItems.map((item) => item.speakerSessionId),
         ].filter(Boolean))];
 
         if (!removableItems.length && !liveState.uploadInFlight && !sessionIds.length) {
@@ -3773,15 +3793,7 @@ $(function () {
         $.getJSON(storedUrl)
             .done((response) => {
                 const items = Array.isArray(response?.data) ? response.data : [];
-                liveState.storedItems = items.map((item) => ({
-                    ...item,
-                    rangeLabel: item.rangeLabel || item.range_label || null,
-                    categoryName: item.categoryName || item.category_name || null,
-                    playUrl: item.play_url || `${playUrlBase}/${item.id}/audio`,
-                    deleteUrl: item.delete_url || `${deleteUrlBase}/${item.id}`,
-                    translatedText: item.translated_text || null,
-                    sourceType: item.sourceType || item.source_type || 'live',
-                }))
+                liveState.storedItems = items.map(normalizeStoredTranscriptItem)
                     .filter((item) => item.sourceType === 'live')
                     .filter(hasUsefulStoredTranscript);
                 renderStoredList();
@@ -3799,7 +3811,7 @@ $(function () {
     const renderQueue = () => {
         updateQueueSummary();
 
-        const items = [...queuedItems].reverse();
+        const items = [...liveState.queuedItems].reverse();
         const emptyHidden = liveState.queuedItems.length > 0 ? 'hidden' : '';
         const html = items
             .map((item) => {
@@ -4027,7 +4039,9 @@ $(function () {
     };
 
     const startRecording = async () => {
-        if (!supportsRecorder) {
+        if (!supportsMicrophone || !supportsRecorder) {
+            setSupportMessage('Unavailable');
+            notifyError('Live recording is unavailable in this window. Please reopen the desktop app or use a browser with microphone recording support.');
             return;
         }
 
@@ -4045,6 +4059,8 @@ $(function () {
         }
 
         try {
+            setSupportMessage('Requesting mic');
+            $caption.text('Requesting microphone').removeClass('text-white').addClass('text-rose-50');
             liveState.activeCategoryName = chosenCategory;
             liveState.activeSpeakerSessionId = liveState.activeSpeakerSessionId || createSpeakerSessionId();
             setCategoryBadge(liveState.activeCategoryName);
@@ -4077,7 +4093,13 @@ $(function () {
         if (liveState.isRecording) {
             stopRecording();
         } else {
-            startRecording();
+            startRecording().catch((error) => {
+                window.console?.error?.('Live recording could not start.', error);
+                liveState.isRecording = false;
+                setSupportMessage('Start failed');
+                notifyError('Live recording could not start. Please try again.');
+                setIdleUi();
+            });
         }
     });
 
@@ -4163,7 +4185,7 @@ $(function () {
     window.addEventListener('pagehide', () => {
         const sessionIds = new Set([
             liveState.activeSpeakerSessionId,
-            ...queuedItems.map((item) => item.speakerSessionId),
+            ...liveState.queuedItems.map((item) => item.speakerSessionId),
         ].filter(Boolean));
         sessionIds.forEach((sessionId) => releaseSpeakerSession(sessionId, true));
     });
@@ -4193,21 +4215,14 @@ $(function () {
     $('[data-export-live-mode]').on('change', renderStoredList);
     $('[data-furnish-live]').on('click', furnishStoredTranscription);
 
-    if (!supportsRecorder) {
-        setSupportMessage('Unavailable');
-        $button
-            .attr('disabled', 'disabled')
-            .removeClass('hover:scale-[1.01]')
-            .addClass('cursor-not-allowed opacity-60');
-        $state.text('Unavailable').removeClass('text-cyan-300').addClass('text-rose-300');
-        $caption.text('Recorder not supported').removeClass('text-white').addClass('text-rose-50');
-        $playIcon.addClass('hidden');
-        $stopIcon.addClass('hidden');
-        return;
-    }
-
     setIdleUi();
     updateQueueSummary();
     loadStoredClips();
     syncCategoryUi();
+
+    if (!supportsMicrophone || !supportsRecorder) {
+        setSupportMessage('Unavailable');
+        $state.text('Unavailable').removeClass('text-cyan-300').addClass('text-rose-300');
+        $caption.text('Click for details').removeClass('text-white').addClass('text-rose-50');
+    }
 });

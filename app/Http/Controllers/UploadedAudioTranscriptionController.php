@@ -27,15 +27,17 @@ class UploadedAudioTranscriptionController extends Controller
             'audio_file' => ['nullable', 'required_without:local_path', 'file'],
             'local_path' => ['nullable', 'required_without:audio_file', 'string'],
             'chunk_seconds' => ['nullable', 'integer', Rule::in([$audioChunkSeconds])],
+            'duration_ms' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $file = $request->file('audio_file');
         $localPath = (string) ($validated['local_path'] ?? '');
         $chunkSeconds = (int) ($validated['chunk_seconds'] ?? $audioChunkSeconds);
+        $durationMs = (int) ($validated['duration_ms'] ?? 0);
 
         try {
             $session = trim($localPath) !== ''
-                ? $chunker->createSessionFromPath($localPath)
+                ? $chunker->createSessionFromPath($localPath, $durationMs)
                 : $chunker->createSession($file);
             $sections = $chunker->buildSections($session['duration_ms'], $chunkSeconds);
 
@@ -51,6 +53,7 @@ class UploadedAudioTranscriptionController extends Controller
         } catch (SpeechToTextException $exception) {
             Log::error('Audio upload preparation failed during transcription setup.', [
                 'message' => $exception->getMessage(),
+                'entry' => trim($localPath) !== '' ? 'local_path' : 'audio_file',
             ]);
 
             return response()->json([
@@ -60,6 +63,8 @@ class UploadedAudioTranscriptionController extends Controller
             Log::error('Audio upload could not be processed.', [
                 'message' => $exception->getMessage(),
                 'exception' => $exception::class,
+                'entry' => trim($localPath) !== '' ? 'local_path' : 'audio_file',
+                'local_path_exists' => trim($localPath) !== '' ? is_file($localPath) : null,
             ]);
 
             return response()->json([

@@ -16,6 +16,7 @@
         "runtime:node": "node --version",
         "runtime:npm": "npm --version",
         "runtime:php": "node scripts/run-php.mjs --version",
+        "diagnostic:real": "node scripts/real-workflow-diagnostic.mjs",
         "clean:tauri": "node scripts/clean-tauri-cache.mjs",
         "tauri:dev": "tauri dev",
         "tauri:build": "node scripts/build-desktop.mjs",

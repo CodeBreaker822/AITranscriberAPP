@@ -215,11 +215,6 @@ class UploadedBatchIngestion
             $this->speakerDiarization->releaseSession($speakerSessionId);
         }
 
-        if ($finalizeSession && $retainedDiarizationAudio !== []) {
-            DiarizeUploadedAudioBatch::dispatch([], $speakerSessionId, $validated['upload_session_id'], true)
-                ->delay(now()->addSeconds(5));
-        }
-
         return AudioChunkIngestionResult::saved($rows);
     }
 

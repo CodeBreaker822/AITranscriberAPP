@@ -18,10 +18,6 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
 {
     use InteractsWithQueue, Queueable;
 
-    public const FINALIZE_RETRY_DELAY_SECONDS = 5;
-
-    public const MAX_FINALIZE_ATTEMPTS = 720;
-
     public int $timeout = 0;
 
     public int $tries = 3;
@@ -36,13 +32,11 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
         public string $speakerSessionId,
         public string $uploadSessionId,
         public bool $finalizeSession = false,
-        public int $finalizeAttempts = 0,
     ) {
         $this->audioChunkPaths = collect($audioChunkPaths)
             ->mapWithKeys(fn (string $path, int|string $id): array => [(int) $id => $path])
             ->filter(fn (string $path, int $id): bool => $id > 0 && trim($path) !== '')
             ->all();
-        $this->finalizeAttempts = max(0, $this->finalizeAttempts);
     }
 
     public function middleware(): array
@@ -65,13 +59,17 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
             $row = AudioChunk::query()->find($audioChunkId);
 
             if (! $row) {
-                @unlink($audioPath);
+                $this->deleteRetainedAudio($audioPath, 'missing_audio_chunk', [
+                    'audio_chunk_id' => $audioChunkId,
+                ]);
 
                 continue;
             }
 
             if ($row->status === AudioChunkStatus::Transcribed->value) {
-                @unlink($audioPath);
+                $this->deleteRetainedAudio($audioPath, 'already_transcribed', [
+                    'audio_chunk_id' => $audioChunkId,
+                ]);
 
                 continue;
             }
@@ -101,7 +99,9 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
                         'transcription_timestamps' => $merged['timestamps'] ?? $transcription['timestamps'],
                         'status' => AudioChunkStatus::Transcribed->value,
                     ])->save();
-                    @unlink($audioPath);
+                    $this->deleteRetainedAudio($audioPath, 'merged_diarization', [
+                        'audio_chunk_id' => $audioChunkId,
+                    ]);
 
                     continue;
                 }
@@ -144,7 +144,7 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
             ]);
 
         foreach ($this->audioChunkPaths as $audioPath) {
-            @unlink($audioPath);
+            $this->deleteRetainedAudio($audioPath, 'diarization_failed');
         }
 
         Log::error('Queued speaker diarization exhausted all retries.', [
@@ -152,11 +152,6 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
             'audio_chunk_ids' => $ids,
             'speaker_session_id' => $this->speakerSessionId,
         ]);
-
-        $this->finalizeUploadSessionIfReady(
-            app(SpeakerDiarizationService::class),
-            app(AudioFileChunkerService::class),
-        );
     }
 
     private function assertPreparedAudioPath(string $audioPath): void
@@ -172,24 +167,31 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
         }
     }
 
+    private function deleteRetainedAudio(string $audioPath, string $reason, array $context = []): void
+    {
+        if (! is_file($audioPath)) {
+            return;
+        }
+
+        if (unlink($audioPath)) {
+            return;
+        }
+
+        Log::warning('Queued speaker diarization retained audio could not be deleted.', [
+            ...$context,
+            'path' => $audioPath,
+            'reason' => $reason,
+            'speaker_session_id' => $this->speakerSessionId,
+            'upload_session_id' => $this->uploadSessionId,
+        ]);
+    }
+
     private function uploadSessionDiarizationFinished(): bool
     {
         return ! AudioChunk::query()
             ->where('audio_path', 'like', 'audio/'.$this->safeUploadSessionId().'/%')
             ->whereIn('status', AudioChunkStatus::pendingDiarizationValues())
             ->exists();
-    }
-
-    private function pendingUploadSessionDiarizationStatuses(): array
-    {
-        return AudioChunk::query()
-            ->where('audio_path', 'like', 'audio/'.$this->safeUploadSessionId().'/%')
-            ->whereIn('status', AudioChunkStatus::pendingDiarizationValues())
-            ->selectRaw('status, count(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status')
-            ->map(fn (mixed $total): int => (int) $total)
-            ->all();
     }
 
     private function safeUploadSessionId(): string
@@ -208,22 +210,6 @@ class DiarizeUploadedAudioBatch implements ShouldQueue
         if ($this->uploadSessionDiarizationFinished()) {
             $speakerDiarization->releaseSession($this->speakerSessionId);
             $chunker->cleanupSession($this->uploadSessionId);
-
-            return;
         }
-
-        if ($this->finalizeAttempts >= self::MAX_FINALIZE_ATTEMPTS) {
-            Log::error('Queued speaker diarization finalization stopped before cleanup because pending chunks did not reach a terminal status.', [
-                'speaker_session_id' => $this->speakerSessionId,
-                'upload_session_id' => $this->uploadSessionId,
-                'finalize_attempts' => $this->finalizeAttempts,
-                'pending_status_counts' => $this->pendingUploadSessionDiarizationStatuses(),
-            ]);
-
-            return;
-        }
-
-        self::dispatch([], $this->speakerSessionId, $this->uploadSessionId, true, $this->finalizeAttempts + 1)
-            ->delay(now()->addSeconds(self::FINALIZE_RETRY_DELAY_SECONDS));
     }
 }
