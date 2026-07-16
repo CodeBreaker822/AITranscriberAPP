@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use App\Enums\AudioChunkStatus;
 use App\Jobs\DiarizeUploadedAudioBatch;
-use App\Services\AudioFileChunkerService;
-use App\Services\SpeakerDiarizationService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Speakers\SpeakerDiarizationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;

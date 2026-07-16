@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\StoredAudioService;
+use App\Services\Audio\StoredAudioService;
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;

@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\TranscriptPolisherException;
-use App\Services\TranscriptSummarizerService;
+use App\Services\Transcripts\TranscriptSummarizerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Mockery;
@@ -116,6 +116,29 @@ class TranscriptSummaryControllerTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.source_type', 'cleaned')
             ->assertJsonPath('data.summary_text', '- Clean summary');
+    }
+
+    public function test_summary_can_run_as_a_background_transcript_job(): void
+    {
+        $this->insertChunk('Background summary', 1, 'This should be summarized away from the request lane.');
+
+        $this->mock(TranscriptSummarizerService::class, function ($mock): void {
+            $mock->shouldReceive('summarize')
+                ->once()
+                ->andReturn(['text' => '- Background summary', 'provider' => 'gemini', 'model' => 'summary-model']);
+        });
+
+        $this->withHeader('X-AITranscriber-Background', '1')
+            ->postJson('/transcripts/summary', ['category_name' => 'Background summary'])
+            ->assertAccepted()
+            ->assertJsonPath('background', true)
+            ->assertJsonStructure(['job_id', 'status_url', 'cancel_url', 'data']);
+
+        $this->assertDatabaseHas('transcript_summaries', [
+            'category_name' => 'Background summary',
+            'summary_text' => '- Background summary',
+            'status' => 'complete',
+        ]);
     }
 
     public function test_ai_context_limit_returns_transcription_too_large(): void

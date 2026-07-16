@@ -4,9 +4,9 @@ namespace App\Services\HostedApi;
 
 use App\Exceptions\SpeechToTextException;
 use App\Exceptions\TranscriptPolisherException;
-use App\Services\AppSettingsService;
-use App\Services\ServiceUserMessage;
-use App\Services\TrustedHttpClient;
+use App\Services\Config\AppSettingsService;
+use App\Services\Support\ServiceUserMessage;
+use App\Services\Http\TrustedHttpClient;
 use Illuminate\Http\Client\ConnectionException;
 
 class HostedPolishingClient
@@ -16,6 +16,7 @@ class HostedPolishingClient
         private readonly HostedApiClient $api,
         private readonly HostedApiErrorMapper $errors,
         private readonly TrustedHttpClient $http,
+        private readonly HostedPolishingPayloadMapper $payloads,
     ) {}
 
     /**
@@ -41,21 +42,8 @@ class HostedPolishingClient
             'instruction' => trim((string) ($options['instructions'] ?? '')),
         ]);
         $response = $this->errors->responseData($rawResponse);
-        $polishedText = (string) ($response['text'] ?? '');
 
-        if (trim($polishedText) === '') {
-            throw new TranscriptPolisherException(
-                $this->errors->messageFromPayload($rawResponse)
-                    ?? 'The transcription server returned a successful response without polished text.'
-            );
-        }
-
-        return [
-            'text' => $polishedText,
-            'timestamps' => is_array($response['timestamps'] ?? null) ? array_values(array_filter($response['timestamps'], 'is_array')) : [],
-            'provider' => $this->errors->nullableString($response['provider'] ?? $polisher['provider']),
-            'model' => $this->errors->nullableString($response['model'] ?? $polisher['model']),
-        ];
+        return $this->payloads->single($rawResponse, $response, $polisher);
     }
 
     /**
@@ -65,30 +53,10 @@ class HostedPolishingClient
     public function polishChunks(array $chunks, array $options = []): array
     {
         $polisher = $this->polisherSelection();
-        $payloadChunks = array_values(array_map(
-            fn (array $chunk): array => [
-                'audio_chunk_id' => (int) $chunk['id'],
-                'clip_index' => $chunk['clip_index'] ?? null,
-                'range_label' => $chunk['range_label'] ?? null,
-                'text' => trim((string) ($chunk['text'] ?? '')),
-                'timestamps' => array_values(array_filter($chunk['timestamps'] ?? [], 'is_array')),
-            ],
-            $chunks,
-        ));
+        $payloadChunks = $this->payloads->requestChunks($chunks);
 
-        if ($payloadChunks === [] || collect($payloadChunks)->every(fn (array $chunk): bool => $chunk['text'] === '')) {
-            return [
-                'chunks' => array_map(
-                    fn (array $chunk): array => [
-                        'audio_chunk_id' => (int) $chunk['audio_chunk_id'],
-                        'text' => '',
-                        'timestamps' => [],
-                    ],
-                    $payloadChunks,
-                ),
-                'provider' => $polisher['provider'],
-                'model' => $polisher['model'],
-            ];
+        if ($this->payloads->allChunksEmpty($payloadChunks)) {
+            return $this->payloads->emptyChunks($payloadChunks, $polisher);
         }
 
         $rawResponse = $this->postJson('/polish', [
@@ -96,35 +64,8 @@ class HostedPolishingClient
             'instruction' => trim((string) ($options['instructions'] ?? '')),
         ]);
         $response = $this->errors->responseData($rawResponse);
-        $responseChunks = array_values(array_filter($response['chunks'] ?? [], 'is_array'));
-        $expectedIds = collect($payloadChunks)
-            ->filter(fn (array $chunk): bool => $chunk['text'] !== '')
-            ->map(fn (array $chunk): int => (int) $chunk['audio_chunk_id'])
-            ->values();
-        $validChunks = collect($responseChunks)
-            ->filter(fn (array $chunk): bool => (int) ($chunk['audio_chunk_id'] ?? 0) > 0
-                && trim((string) ($chunk['text'] ?? '')) !== '')
-            ->keyBy(fn (array $chunk): int => (int) $chunk['audio_chunk_id']);
 
-        if ($expectedIds->contains(fn (int $id): bool => ! $validChunks->has($id))) {
-            throw new TranscriptPolisherException(
-                $this->errors->messageFromPayload($rawResponse)
-                    ?? 'The transcription server returned an incomplete or empty polished transcript.'
-            );
-        }
-
-        return [
-            'chunks' => array_values(array_map(
-                fn (array $chunk): array => [
-                    'audio_chunk_id' => (int) ($chunk['audio_chunk_id'] ?? 0),
-                    'text' => (string) ($chunk['text'] ?? ''),
-                    'timestamps' => is_array($chunk['timestamps'] ?? null) ? array_values(array_filter($chunk['timestamps'], 'is_array')) : [],
-                ],
-                $responseChunks,
-            )),
-            'provider' => $this->errors->nullableString($response['provider'] ?? $polisher['provider']),
-            'model' => $this->errors->nullableString($response['model'] ?? $polisher['model']),
-        ];
+        return $this->payloads->chunks($rawResponse, $response, $payloadChunks, $polisher);
     }
 
     private function postJson(string $path, array $payload): array
@@ -174,35 +115,6 @@ class HostedPolishingClient
      */
     private function polisherSelection(): array
     {
-        $providers = $this->settings->licenseStatus()['providers']['polishing'] ?? [];
-
-        if (! is_array($providers)) {
-            return [
-                'provider' => null,
-                'model' => null,
-            ];
-        }
-
-        foreach ($providers as $provider) {
-            if (! is_array($provider)) {
-                continue;
-            }
-
-            if (! ($provider['configured'] ?? false) || ! ($provider['enabled'] ?? false) || ! ($provider['connected'] ?? false)) {
-                continue;
-            }
-
-            $models = is_array($provider['models'] ?? null) ? $provider['models'] : [];
-
-            return [
-                'provider' => $this->errors->nullableString($provider['provider'] ?? null),
-                'model' => $this->errors->nullableString($models[0]['id'] ?? null),
-            ];
-        }
-
-        return [
-            'provider' => null,
-            'model' => null,
-        ];
+        return $this->payloads->selection($this->settings->licenseStatus());
     }
 }

@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Services\AudioFileChunkerService;
-use App\Services\SpeechAudioFilterService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Audio\SpeechAudioFilterService;
 use Illuminate\Http\UploadedFile;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;

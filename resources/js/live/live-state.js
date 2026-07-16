@@ -22,6 +22,7 @@ export const createLiveWorkflowState = ({ categoryName = '' } = {}) => ({
     cancelUploadByUser: false,
     uploadPaused: false,
     liveCleanerStatus: 'Waiting',
+    liveCleanerCompletedSections: 0,
     activeCategoryName: String(categoryName || '').trim(),
     liveShowingVadLogs: false,
     activeSpeakerSessionId: '',

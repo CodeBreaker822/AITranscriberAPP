@@ -3,10 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\SpeechToTextException;
-use App\Services\AppSettingsService;
-use App\Services\AudioMemoryService;
-use App\Services\HostedTranscriptionApiService;
-use App\Services\TranscriptMemoryService;
+use App\Services\Config\AppSettingsService;
+use App\Services\Audio\AudioMemoryService;
+use App\Services\HostedApi\HostedTranscriptionApiService;
+use App\Services\Transcripts\TranscriptMemoryService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;

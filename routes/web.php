@@ -10,10 +10,13 @@ use App\Http\Controllers\TranscriptFurnishController;
 use App\Http\Controllers\TranscriptMemoryController;
 use App\Http\Controllers\TranscriptSummaryController;
 use App\Http\Controllers\TranscriptionPageController;
+use App\Http\Controllers\UploadBackgroundJobController;
 use App\Http\Controllers\UploadedAudioTranscriptionController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [TranscriptionPageController::class, 'live'])->name('transcription.live');
+Route::get('/desktop-loading', [TranscriptionPageController::class, 'desktopLoading'])->name('desktop.loading');
+Route::get('/desktop-assets-ready', [TranscriptionPageController::class, 'desktopAssetsReady'])->name('desktop.assets-ready');
 
 Route::get('/upload', [TranscriptionPageController::class, 'upload'])->name('transcription.upload');
 
@@ -42,6 +45,8 @@ Route::post('/audio-uploads/sections/prepare', [AudioChunkController::class, 'pr
 Route::post('/audio-uploads/sections/prepare-batch', [AudioChunkController::class, 'prepareUploadedSectionsBatch'])->name('audio-uploads.sections.prepare-batch');
 Route::post('/audio-uploads/sections/diarize', [AudioChunkController::class, 'queueUploadedDiarization'])->name('audio-uploads.sections.diarize');
 Route::get('/audio-uploads/sessions/status', [AudioChunkController::class, 'uploadSessionStatus'])->name('audio-uploads.sessions.status');
+Route::get('/audio-uploads/background-jobs/{job}', [UploadBackgroundJobController::class, 'show'])->name('background-jobs.show');
+Route::post('/audio-uploads/background-jobs/{job}/cancel', [UploadBackgroundJobController::class, 'cancel'])->name('background-jobs.cancel');
 Route::post('/transcripts/furnish', [TranscriptFurnishController::class, 'store'])->name('transcripts.furnish');
 Route::get('/transcripts/summary', [TranscriptSummaryController::class, 'show'])->name('transcripts.summary.show');
 Route::post('/transcripts/summary', [TranscriptSummaryController::class, 'store'])->name('transcripts.summary.store');

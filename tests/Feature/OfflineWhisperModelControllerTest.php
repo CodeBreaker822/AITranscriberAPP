@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Services\OfflineWhisperModelService;
+use App\Services\Speech\OfflineWhisperModelService;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;

@@ -4,12 +4,11 @@ namespace App\Services\AudioChunk;
 
 use App\Enums\TranscriptionEngine;
 use App\Exceptions\SpeechToTextException;
-use App\Jobs\DiarizeUploadedAudioBatch;
-use App\Services\AudioFileChunkerService;
-use App\Services\ServiceUserMessage;
-use App\Services\SpeakerDiarizationService;
-use App\Services\SpeechAudioFilterService;
-use App\Services\SpeechToTextService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Audio\SpeechAudioFilterService;
+use App\Services\Support\ServiceUserMessage;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Speech\SpeechToTextService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -51,17 +50,7 @@ class UploadedSectionIngestion
                     ? $this->chunker->sessionAudioFile($validated['upload_session_id'], $sourceName)
                     : null;
 
-                if ($finalizeSession) {
-                    $this->releaseFinalizedSession($validated, $speakerSessionId);
-                }
-                $this->cleanupUploadedSectionFiles($validated['upload_session_id'], $finalizeSession, $segment);
-
-                return AudioChunkIngestionResult::skipped(
-                    $this->payloads->skippedResponseData($validated, 'upload', [
-                        'prepared_duration_ms' => (int) ($segment['duration_ms'] ?? $validated['duration_ms']),
-                        'prepared_file_size_bytes' => (int) ($segment['size'] ?? 0),
-                    ]),
-                );
+                return $this->skippedSection($validated, $speakerSessionId, $finalizeSession, $segment);
             } else {
                 $segment = $this->chunker->extractSegment(
                     $validated['upload_session_id'],
@@ -75,17 +64,12 @@ class UploadedSectionIngestion
                 );
 
                 if (! $speechAudio['speech_detected']) {
-                    if ($finalizeSession) {
-                        $this->releaseFinalizedSession($validated, $speakerSessionId);
-                    }
-                    $this->cleanupUploadedSectionFiles($validated['upload_session_id'], $finalizeSession, $segment);
-
-                    return AudioChunkIngestionResult::skipped(
-                        $this->payloads->skippedResponseData($validated, 'upload', [
-                            'prepared_duration_ms' => (int) $segment['duration_ms'],
-                            'prepared_file_size_bytes' => (int) $segment['size'],
-                            'vad' => $speechAudio['vad'],
-                        ]),
+                    return $this->skippedSection(
+                        $validated,
+                        $speakerSessionId,
+                        $finalizeSession,
+                        $segment,
+                        ['vad' => $speechAudio['vad']],
                     );
                 }
 
@@ -137,21 +121,13 @@ class UploadedSectionIngestion
         }
 
         if ($this->payloads->isNoSpeechTranscript($transcription['text'] ?? '')) {
-            if ($finalizeSession) {
-                $this->releaseFinalizedSession($validated, $speakerSessionId);
-            }
-            $this->cleanupUploadedSectionFiles(
-                $validated['upload_session_id'],
+            return $this->skippedSection(
+                $validated,
+                $speakerSessionId,
                 $finalizeSession,
                 $segment,
+                [],
                 $transcriptionAudio,
-            );
-
-            return AudioChunkIngestionResult::skipped(
-                $this->payloads->skippedResponseData($validated, 'upload', [
-                    'prepared_duration_ms' => (int) $segment['duration_ms'],
-                    'prepared_file_size_bytes' => (int) $segment['size'],
-                ]),
             );
         }
 
@@ -201,6 +177,28 @@ class UploadedSectionIngestion
         }
 
         return AudioChunkIngestionResult::saved($row);
+    }
+
+    private function skippedSection(
+        array $validated,
+        string $speakerSessionId,
+        bool $finalizeSession,
+        ?array $segment,
+        array $extra = [],
+        ?array $transcriptionAudio = null,
+    ): AudioChunkIngestionResult {
+        if ($finalizeSession) {
+            $this->releaseFinalizedSession($validated, $speakerSessionId);
+        }
+
+        $this->cleanupUploadedSectionFiles($validated['upload_session_id'], $finalizeSession, $segment, $transcriptionAudio);
+
+        return AudioChunkIngestionResult::skipped(
+            $this->payloads->skippedResponseData($validated, 'upload', array_merge([
+                'prepared_duration_ms' => (int) ($segment['duration_ms'] ?? $validated['duration_ms']),
+                'prepared_file_size_bytes' => (int) ($segment['size'] ?? 0),
+            ], $extra)),
+        );
     }
 
     private function releaseFinalizedSession(array $validated, string $speakerSessionId): void

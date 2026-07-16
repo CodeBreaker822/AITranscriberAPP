@@ -8,9 +8,10 @@ use App\Services\AudioChunk\AudioChunkIngestionService;
 use App\Services\AudioChunk\AudioChunkPersistenceService;
 use App\Services\AudioChunk\UploadedAudioBatchPreparationService;
 use App\Services\AudioChunk\UploadedDiarizationService;
-use App\Services\AudioFileChunkerService;
-use App\Services\SpeakerDiarizationService;
-use App\Services\UploadedAudioSectionPreparationService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Audio\UploadedAudioSectionPreparationService;
+use App\Services\BackgroundJobs\BackgroundJobDispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -36,11 +37,21 @@ class AudioChunkController extends Controller
         return response()->json($audioChunks->statusRows($validated['ids']));
     }
 
-    public function store(Request $request, AudioChunkIngestionService $ingestion): JsonResponse
+    public function store(
+        Request $request,
+        AudioChunkIngestionService $ingestion,
+        BackgroundJobDispatcher $backgroundJobs,
+    ): JsonResponse
     {
         if ($request->filled('upload_session_id')) {
+            $validated = $request->validate($this->uploadedSectionRules());
+
+            if ($backgroundJobs->wantsBackgroundJob($request)) {
+                return $backgroundJobs->response('store_uploaded_section', $validated);
+            }
+
             return $this->ingestionResponse(
-                $ingestion->storeUploadedSection($request->validate($this->uploadedSectionRules())),
+                $ingestion->storeUploadedSection($validated),
             );
         }
 
@@ -67,6 +78,7 @@ class AudioChunkController extends Controller
     public function prepareUploadedSection(
         Request $request,
         UploadedAudioSectionPreparationService $preparer,
+        BackgroundJobDispatcher $backgroundJobs,
     ): JsonResponse {
         @set_time_limit(0);
 
@@ -81,6 +93,10 @@ class AudioChunkController extends Controller
             'duration_ms' => ['required', 'integer', 'min:1'],
             'speaker_session_id' => ['nullable', 'string', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
         ]);
+
+        if ($backgroundJobs->wantsBackgroundJob($request)) {
+            return $backgroundJobs->response('prepare_upload_section', $validated);
+        }
 
         try {
             return response()->json([
@@ -114,6 +130,7 @@ class AudioChunkController extends Controller
     public function prepareUploadedSectionsBatch(
         Request $request,
         UploadedAudioBatchPreparationService $preparer,
+        BackgroundJobDispatcher $backgroundJobs,
     ): JsonResponse {
         @set_time_limit(0);
 
@@ -130,6 +147,10 @@ class AudioChunkController extends Controller
             'sections.*.range_label' => ['required', 'string', 'max:32'],
             'sections.*.duration_ms' => ['required', 'integer', 'min:1'],
         ]);
+
+        if ($backgroundJobs->wantsBackgroundJob($request)) {
+            return $backgroundJobs->response('prepare_upload_sections_batch', $validated);
+        }
 
         try {
             return response()->json($preparer->prepare($validated));
@@ -177,30 +198,40 @@ class AudioChunkController extends Controller
         ]);
     }
 
-    public function storeBatch(Request $request, AudioChunkIngestionService $ingestion): JsonResponse
+    public function storeBatch(
+        Request $request,
+        AudioChunkIngestionService $ingestion,
+        BackgroundJobDispatcher $backgroundJobs,
+    ): JsonResponse
     {
+        $validated = $request->validate([
+            'upload_session_id' => ['required', 'string', 'max:80'],
+            'user_id' => ['nullable', 'integer', 'min:1'],
+            'category_name' => ['required', 'string', 'max:120'],
+            'language_code' => ['nullable', 'string', 'max:32'],
+            'transcription_engine' => ['nullable', 'string', Rule::in([TranscriptionEngine::Online->value])],
+            'whisper_model' => ['nullable', 'string', 'in:tiny,small,medium,large,turbo'],
+            'speaker_session_id' => ['nullable', 'string', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
+            'progress_id' => ['nullable', 'string', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
+            'finalize_session' => ['nullable', 'boolean'],
+            'sections' => ['required', 'array', 'min:1', 'max:20'],
+            'sections.*.clip_index' => ['required', 'integer', 'min:1'],
+            'sections.*.clip_start_ms' => ['required', 'integer', 'min:0'],
+            'sections.*.clip_end_ms' => ['required', 'integer', 'min:0'],
+            'sections.*.range_label' => ['required', 'string', 'max:32'],
+            'sections.*.duration_ms' => ['required', 'integer', 'min:1'],
+            'sections.*.audio_chunk_id' => ['nullable', 'integer', 'min:1'],
+            'sections.*.prepared_name' => ['nullable', 'string', 'regex:/^chunk_\d+(?:-speech)?\.wav$/i'],
+            'sections.*.source_name' => ['nullable', 'string', 'regex:/^chunk_\d+\.wav$/i'],
+            'sections.*.prepared_skipped' => ['nullable', 'boolean'],
+        ]);
+
+        if ($backgroundJobs->wantsBackgroundJob($request)) {
+            return $backgroundJobs->response('store_uploaded_batch', $validated);
+        }
+
         return $this->ingestionResponse(
-            $ingestion->storeUploadedBatch($request->validate([
-                'upload_session_id' => ['required', 'string', 'max:80'],
-                'user_id' => ['nullable', 'integer', 'min:1'],
-                'category_name' => ['required', 'string', 'max:120'],
-                'language_code' => ['nullable', 'string', 'max:32'],
-                'transcription_engine' => ['nullable', 'string', Rule::in([TranscriptionEngine::Online->value])],
-                'whisper_model' => ['nullable', 'string', 'in:tiny,small,medium,large,turbo'],
-                'speaker_session_id' => ['nullable', 'string', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
-                'progress_id' => ['nullable', 'string', 'max:120', 'regex:/^[A-Za-z0-9._:-]+$/'],
-                'finalize_session' => ['nullable', 'boolean'],
-                'sections' => ['required', 'array', 'min:1', 'max:20'],
-                'sections.*.clip_index' => ['required', 'integer', 'min:1'],
-                'sections.*.clip_start_ms' => ['required', 'integer', 'min:0'],
-                'sections.*.clip_end_ms' => ['required', 'integer', 'min:0'],
-                'sections.*.range_label' => ['required', 'string', 'max:32'],
-                'sections.*.duration_ms' => ['required', 'integer', 'min:1'],
-                'sections.*.audio_chunk_id' => ['nullable', 'integer', 'min:1'],
-                'sections.*.prepared_name' => ['nullable', 'string', 'regex:/^chunk_\d+(?:-speech)?\.wav$/i'],
-                'sections.*.source_name' => ['nullable', 'string', 'regex:/^chunk_\d+\.wav$/i'],
-                'sections.*.prepared_skipped' => ['nullable', 'boolean'],
-            ])),
+            $ingestion->storeUploadedBatch($validated),
         );
     }
 

@@ -5,12 +5,12 @@ namespace App\Services\AudioChunk;
 use App\Enums\AudioChunkStatus;
 use App\Exceptions\SpeechToTextException;
 use App\Jobs\DiarizeUploadedAudioBatch;
-use App\Services\AppSettingsService;
-use App\Services\AudioFileChunkerService;
-use App\Services\OnlineAudioTransportService;
-use App\Services\ServiceUserMessage;
-use App\Services\SpeakerDiarizationService;
-use App\Services\SpeechToTextService;
+use App\Services\Config\AppSettingsService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Audio\OnlineAudioTransportService;
+use App\Services\Support\ServiceUserMessage;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Speech\SpeechToTextService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 

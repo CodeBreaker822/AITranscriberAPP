@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\AppSettingsService;
+use App\Services\Config\AppSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

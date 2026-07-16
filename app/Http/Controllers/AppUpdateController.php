@@ -3,9 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\SpeechToTextException;
-use App\Services\AppUpdateService;
-use App\Services\HostedTranscriptionApiService;
-use App\Services\OfflineWhisperService;
+use App\Services\Updates\AppUpdateService;
+use App\Services\HostedApi\HostedTranscriptionApiService;
+use App\Services\Speech\OfflineWhisperService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;

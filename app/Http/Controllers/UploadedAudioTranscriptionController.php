@@ -3,9 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Exceptions\SpeechToTextException;
-use App\Services\AudioFileChunkerService;
-use App\Services\AppSettingsService;
-use App\Services\ServiceUserMessage;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Config\AppSettingsService;
+use App\Services\Support\ServiceUserMessage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;

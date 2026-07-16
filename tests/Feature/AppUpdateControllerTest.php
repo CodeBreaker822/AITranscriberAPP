@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Services\AppSettingsService;
-use App\Services\AppUpdateService;
+use App\Services\Config\AppSettingsService;
+use App\Services\Updates\AppUpdateService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;

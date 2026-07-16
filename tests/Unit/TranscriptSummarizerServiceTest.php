@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\HostedTranscriptionApiService;
-use App\Services\TranscriptSummarizerService;
+use App\Services\HostedApi\HostedTranscriptionApiService;
+use App\Services\Transcripts\TranscriptSummarizerService;
 use App\Exceptions\TranscriptPolisherException;
 use Mockery;
 use PHPUnit\Framework\TestCase;

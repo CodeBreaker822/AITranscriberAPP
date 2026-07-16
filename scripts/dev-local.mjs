@@ -77,33 +77,6 @@ function start(name, command, args, options = {}) {
     });
 }
 
-async function waitForVite() {
-    const url = 'http://127.0.0.1:5173/@vite/client';
-    const deadline = Date.now() + 60_000;
-    let lastError = 'Vite did not respond.';
-
-    while (Date.now() < deadline && !stopping) {
-        try {
-            const response = await fetch(url, {
-                cache: 'no-store',
-                signal: AbortSignal.timeout(2_000),
-            });
-
-            if (response.ok) {
-                return;
-            }
-
-            lastError = `Vite returned HTTP ${response.status}.`;
-        } catch (error) {
-            lastError = error?.message || String(error);
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-
-    throw new Error(`Vite was not ready on ${url}: ${lastError}`);
-}
-
 function stop(message) {
     if (stopping) {
         return;
@@ -131,10 +104,10 @@ try {
     await runOnce(['artisan', 'view:clear', '--no-ansi']);
     await runOnce(['artisan', 'config:clear', '--no-ansi']);
     await runOnce(['artisan', 'queue:clear', 'database', '--queue=default', '--force', '--no-interaction']);
+    await runOnce(['artisan', 'queue:clear', 'database', '--queue=audio', '--force', '--no-interaction']);
+    await runOnce(['artisan', 'queue:clear', 'database', '--queue=transcripts', '--force', '--no-interaction']);
 
     start('Vite server', process.execPath, [vite]);
-    await waitForVite();
-
     start('Laravel server', php, [
         '-S',
         '127.0.0.1:8010',
@@ -142,9 +115,26 @@ try {
         publicDirectory,
         laravelServerRouter,
     ], { cwd: publicDirectory });
-    start('Queue worker', php, [
+    start('Audio queue worker', php, [
         'artisan',
         'queue:work',
+        '--queue=audio',
+        '--sleep=1',
+        '--tries=3',
+        '--timeout=0',
+    ]);
+    start('Transcript queue worker', php, [
+        'artisan',
+        'queue:work',
+        '--queue=transcripts',
+        '--sleep=1',
+        '--tries=3',
+        '--timeout=0',
+    ]);
+    start('Default queue worker', php, [
+        'artisan',
+        'queue:work',
+        '--queue=default',
         '--sleep=1',
         '--tries=3',
         '--timeout=0',

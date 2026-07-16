@@ -229,7 +229,7 @@ fn run_offline_whisper_cli() -> bool {
 
 struct LaravelProcesses {
     server: Mutex<Option<Child>>,
-    queue_worker: Mutex<Option<Child>>,
+    queue_workers: Mutex<Vec<Child>>,
 }
 
 struct LaravelPaths {
@@ -532,19 +532,24 @@ fn clear_pending_queue(
     php_path: PathBuf,
     artisan_path: PathBuf,
 ) -> Result<(), String> {
-    run_artisan(
-        paths,
-        php_path,
-        artisan_path,
-        &[
-            "queue:clear",
-            "database",
-            "--queue=default",
-            "--force",
-            "--no-interaction",
-        ],
-        "pending queue cleanup",
-    )
+    for queue_name in ["default", "audio", "transcripts"] {
+        let queue_arg = format!("--queue={queue_name}");
+        run_artisan(
+            paths,
+            php_path.clone(),
+            artisan_path.clone(),
+            &[
+                "queue:clear",
+                "database",
+                queue_arg.as_str(),
+                "--force",
+                "--no-interaction",
+            ],
+            "pending queue cleanup",
+        )?;
+    }
+
+    Ok(())
 }
 
 fn run_artisan(
@@ -734,42 +739,52 @@ fn start_laravel(app: &tauri::AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("failed to start Laravel server: {error}"))?;
 
-    let queue_stdout = startup_log_handle(&paths)?;
-    let queue_stderr = queue_stdout
-        .try_clone()
-        .map_err(|error| format!("failed to clone queue worker log handle: {error}"))?;
-    let mut queue_command = laravel_command(
-        paths.project_dir.join("php").join("php.exe"),
-        paths.project_dir.join("artisan"),
-        &paths,
-    );
-    queue_command
-        .arg("queue:work")
-        .arg("--sleep=1")
-        .arg("--tries=3")
-        .arg("--timeout=0")
-        .stdout(Stdio::from(queue_stdout))
-        .stderr(Stdio::from(queue_stderr));
-    queue_command.creation_flags(CREATE_NO_WINDOW);
+    let mut queue_workers = Vec::new();
+    for queue_name in ["audio", "transcripts", "default"] {
+        let queue_stdout = startup_log_handle(&paths)?;
+        let queue_stderr = queue_stdout
+            .try_clone()
+            .map_err(|error| format!("failed to clone {queue_name} queue worker log handle: {error}"))?;
+        let mut queue_command = laravel_command(
+            paths.project_dir.join("php").join("php.exe"),
+            paths.project_dir.join("artisan"),
+            &paths,
+        );
+        queue_command
+            .arg("queue:work")
+            .arg("--queue")
+            .arg(queue_name)
+            .arg("--sleep=1")
+            .arg("--tries=3")
+            .arg("--timeout=0")
+            .stdout(Stdio::from(queue_stdout))
+            .stderr(Stdio::from(queue_stderr));
+        queue_command.creation_flags(CREATE_NO_WINDOW);
 
-    let queue_worker = match queue_command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let mut server = server;
-            let _ = server.kill();
-            let _ = server.wait();
+        match queue_command.spawn() {
+            Ok(child) => queue_workers.push(child),
+            Err(error) => {
+                let mut server = server;
+                let _ = server.kill();
+                let _ = server.wait();
 
-            return Err(format!("failed to start Laravel queue worker: {error}"));
+                for mut worker in queue_workers {
+                    let _ = worker.kill();
+                    let _ = worker.wait();
+                }
+
+                return Err(format!("failed to start Laravel {queue_name} queue worker: {error}"));
+            }
         }
-    };
+    }
 
     let state: State<LaravelProcesses> = app.state();
     *state.server.lock().map_err(|error| error.to_string())? = Some(server);
     *state
-        .queue_worker
+        .queue_workers
         .lock()
-        .map_err(|error| error.to_string())? = Some(queue_worker);
-    append_startup_log(&paths, "Laravel queue worker started.");
+        .map_err(|error| error.to_string())? = queue_workers;
+    append_startup_log(&paths, "Laravel queue workers started.");
 
     Ok(())
 }
@@ -840,19 +855,24 @@ fn wait_for_laravel(paths: &LaravelPaths) -> Result<(), String> {
 fn stop_laravel(app: &tauri::AppHandle) {
     let state: State<LaravelProcesses> = app.state();
 
-    for process in [&state.queue_worker, &state.server] {
-        let child_process = {
-            let Ok(mut guard) = process.lock() else {
-                continue;
-            };
-
-            guard.take()
-        };
-
-        if let Some(mut child) = child_process {
+    if let Ok(mut workers) = state.queue_workers.lock() {
+        for mut child in workers.drain(..) {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    let child_process = {
+        let Ok(mut guard) = state.server.lock() else {
+            return;
+        };
+
+        guard.take()
+    };
+
+    if let Some(mut child) = child_process {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -910,7 +930,10 @@ fn show_startup_error(app: &tauri::AppHandle, message: &str) {
 
 fn show_laravel_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.eval(&format!("window.location.replace('{LARAVEL_URL}')"));
+        if !cfg!(debug_assertions) {
+            let _ = window.eval(&format!("window.location.replace('{LARAVEL_URL}')"));
+        }
+
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -1325,7 +1348,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(LaravelProcesses {
             server: Mutex::new(None),
-            queue_worker: Mutex::new(None),
+            queue_workers: Mutex::new(Vec::new()),
         })
         .invoke_handler(tauri::generate_handler![
             open_external_url,

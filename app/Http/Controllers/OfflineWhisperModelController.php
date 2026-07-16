@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\OfflineWhisperModelService;
-use App\Services\SpeakerDiarizationModelService;
+use App\Services\Speech\OfflineWhisperModelService;
+use App\Services\Speakers\SpeakerDiarizationModelService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;

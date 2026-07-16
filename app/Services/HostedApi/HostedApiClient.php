@@ -3,8 +3,8 @@
 namespace App\Services\HostedApi;
 
 use App\Exceptions\SpeechToTextException;
-use App\Services\AppSettingsService;
-use App\Services\TrustedHttpClient;
+use App\Services\Config\AppSettingsService;
+use App\Services\Http\TrustedHttpClient;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 

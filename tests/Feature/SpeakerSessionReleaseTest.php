@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Services\SpeakerDiarizationService;
+use App\Services\Speakers\SpeakerDiarizationService;
 use Tests\TestCase;
 
 class SpeakerSessionReleaseTest extends TestCase

@@ -4,9 +4,9 @@ namespace App\Jobs;
 
 use App\Enums\AudioChunkStatus;
 use App\Models\AudioChunk;
-use App\Services\AudioFileChunkerService;
+use App\Services\Audio\AudioFileChunkerService;
 use App\Services\AudioChunk\UploadedDiarizationService;
-use App\Services\SpeakerDiarizationService;
+use App\Services\Speakers\SpeakerDiarizationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\InteractsWithQueue;

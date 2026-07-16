@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\AudioMemoryService;
+use App\Services\Audio\AudioMemoryService;
 use Illuminate\Http\RedirectResponse;
 
 class AudioMemoryController extends Controller

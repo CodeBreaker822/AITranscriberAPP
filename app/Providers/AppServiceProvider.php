@@ -2,8 +2,10 @@
 
 namespace App\Providers;
 
-use App\Services\AppSettingsService;
-use App\Services\OfflineWhisperModelService;
+use App\Services\Audio\SpeechActivityDetector;
+use App\Services\Audio\SpeechActivityDetectorResolver;
+use App\Services\Config\AppSettingsService;
+use App\Services\Speech\OfflineWhisperModelService;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\View;
 
@@ -14,7 +16,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(
+            SpeechActivityDetector::class,
+            fn ($app): SpeechActivityDetector => $app->make(SpeechActivityDetectorResolver::class)->detector(),
+        );
     }
 
     /**

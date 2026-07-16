@@ -2,7 +2,7 @@
 
 namespace App\Services\AudioChunk;
 
-use App\Services\UploadedAudioSectionPreparationService;
+use App\Services\Audio\UploadedAudioSectionPreparationService;
 
 class UploadedAudioBatchPreparationService
 {

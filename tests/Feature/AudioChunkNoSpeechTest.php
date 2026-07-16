@@ -2,12 +2,12 @@
 
 namespace Tests\Feature;
 
-use App\Services\AudioFileChunkerService;
-use App\Services\OnlineAudioTransportService;
-use App\Services\SpeakerDiarizationService;
-use App\Services\SpeechAudioFilterService;
-use App\Services\SpeechToTextService;
-use App\Services\StoredAudioService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Audio\OnlineAudioTransportService;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Audio\SpeechAudioFilterService;
+use App\Services\Speech\SpeechToTextService;
+use App\Services\Audio\StoredAudioService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;

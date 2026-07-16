@@ -5,8 +5,8 @@ namespace App\Services\AudioChunk;
 use App\Enums\AudioChunkStatus;
 use App\Jobs\DiarizeUploadedAudioBatch;
 use App\Models\AudioChunk;
-use App\Services\AudioFileChunkerService;
-use App\Services\SpeakerDiarizationService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Speakers\SpeakerDiarizationService;
 use Illuminate\Support\Facades\Log;
 
 class UploadedDiarizationService
@@ -15,6 +15,7 @@ class UploadedDiarizationService
         private readonly SpeakerDiarizationService $speakerDiarization,
         private readonly AudioFileChunkerService $chunker,
         private readonly AudioChunkPersistenceService $persistence,
+        private readonly UploadedDiarizationResultStore $results,
     ) {}
 
     public function queuePreparedAudio(
@@ -69,10 +70,8 @@ class UploadedDiarizationService
             $audioChunkId = (int) ($section['audio_chunk_id'] ?? 0);
             $preparedName = trim((string) ($section['prepared_name'] ?? ''));
 
-            if ($audioChunkId <= 0 || $preparedName === '') {
-                if ($preparedName === '') {
-                    continue;
-                }
+            if ($preparedName === '') {
+                continue;
             }
 
             try {
@@ -144,7 +143,7 @@ class UploadedDiarizationService
         array $transcription,
         string $speakerSessionId,
     ): array {
-        $segments = $this->readSegments($audioPath);
+        $segments = $this->results->read($audioPath);
 
         if ($segments === []) {
             return $transcription;
@@ -155,7 +154,7 @@ class UploadedDiarizationService
             'speaker_session_id' => $speakerSessionId,
         ]);
 
-        $this->deleteSidecar($audioPath);
+        $this->results->delete($audioPath);
         @unlink($audioPath);
 
         return $merged;
@@ -163,7 +162,7 @@ class UploadedDiarizationService
 
     public function hasPreparedResult(string $audioPath): bool
     {
-        return is_file($this->sidecarPath($audioPath));
+        return $this->results->has($audioPath);
     }
 
     public function finishDiarization(
@@ -180,7 +179,7 @@ class UploadedDiarizationService
         ];
 
         if ($transcription['timestamps'] === []) {
-            $this->writeSegments($audioPath, $segments);
+            $this->results->write($audioPath, $segments);
             $audioChunk->forceFill([
                 'status' => AudioChunkStatus::DiarizationWaitingTranscript->value,
             ])->save();
@@ -199,41 +198,7 @@ class UploadedDiarizationService
             'status' => AudioChunkStatus::Transcribed->value,
         ])->save();
 
-        $this->deleteSidecar($audioPath);
+        $this->results->delete($audioPath);
         @unlink($audioPath);
-    }
-
-    /** @return array<int, array<string, mixed>> */
-    private function readSegments(string $audioPath): array
-    {
-        $path = $this->sidecarPath($audioPath);
-
-        if (! is_file($path)) {
-            return [];
-        }
-
-        $decoded = json_decode((string) @file_get_contents($path), true);
-
-        return is_array($decoded) ? array_values(array_filter($decoded, 'is_array')) : [];
-    }
-
-    /** @param array<int, array<string, mixed>> $segments */
-    private function writeSegments(string $audioPath, array $segments): void
-    {
-        $encoded = json_encode(array_values($segments), JSON_UNESCAPED_SLASHES);
-
-        if (is_string($encoded)) {
-            @file_put_contents($this->sidecarPath($audioPath), $encoded);
-        }
-    }
-
-    private function deleteSidecar(string $audioPath): void
-    {
-        @unlink($this->sidecarPath($audioPath));
-    }
-
-    private function sidecarPath(string $audioPath): string
-    {
-        return $audioPath.'.diarization.json';
     }
 }

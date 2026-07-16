@@ -37,6 +37,7 @@ return [
     ],
 
     'silero_vad' => [
+        'driver' => env('SILERO_VAD_DRIVER', env('SILERO_VAD_ENABLED', true) ? 'silero' : 'disabled'),
         'binary' => env('SILERO_VAD_BINARY'),
         'threshold' => env('SILERO_VAD_THRESHOLD', 0.5),
         'min_speech_ms' => env('SILERO_VAD_MIN_SPEECH_MS', 250),
@@ -59,6 +60,7 @@ return [
     ],
 
     'speaker_diarization' => [
+        'driver' => env('SHERPA_DIARIZATION_DRIVER', env('SHERPA_DIARIZATION_ENABLED', true) ? 'local' : 'disabled'),
         'model_directory' => env('SHERPA_DIARIZATION_MODEL_DIRECTORY'),
         'segmentation_url' => env('SHERPA_DIARIZATION_SEGMENTATION_URL', 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2'),
         'embedding_url' => env('SHERPA_DIARIZATION_EMBEDDING_URL', 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx'),

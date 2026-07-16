@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\TrustedHttpClient;
+use App\Services\Http\TrustedHttpClient;
 use Tests\TestCase;
 
 class TrustedHttpClientTest extends TestCase

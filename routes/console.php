@@ -1,8 +1,8 @@
 <?php
 
-use App\Services\AppSettingsService;
-use App\Services\SpeakerDiarizationService;
-use App\Services\UploadedAudioSectionPreparationService;
+use App\Services\Config\AppSettingsService;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Audio\UploadedAudioSectionPreparationService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;

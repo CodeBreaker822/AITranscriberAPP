@@ -2,12 +2,33 @@
 
 namespace Tests\Unit;
 
-use App\Services\SpeakerDiarizationService;
-use PHPUnit\Framework\TestCase;
-use ReflectionClass;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Speakers\SpeakerDiarizationModelService;
+use App\Services\Speakers\SpeakerTranscriptMerger;
+use Tests\TestCase;
 
 class SpeakerDiarizationServiceTest extends TestCase
 {
+    public function test_disabled_diarization_behaves_like_a_noop_block(): void
+    {
+        config(['services.speaker_diarization.driver' => 'disabled']);
+
+        $models = $this->createMock(SpeakerDiarizationModelService::class);
+        $models->expects($this->never())->method('activeModelPaths');
+
+        $service = app()->makeWith(SpeakerDiarizationService::class, [
+            'models' => $models,
+        ]);
+        $transcription = [
+            'text' => 'Plain transcript.',
+            'timestamps' => [['text' => 'Plain transcript.', 'start' => 0.0, 'end' => 1.0]],
+        ];
+
+        $this->assertFalse($service->canDiarize());
+        $this->assertSame([], $service->diarizeSegments(__FILE__));
+        $this->assertSame($transcription, $service->apply(__FILE__, $transcription));
+    }
+
     public function test_it_maps_timestamp_overlap_and_formats_speaker_turns(): void
     {
         $audio = tempnam(sys_get_temp_dir(), 'diarization-test-');
@@ -59,15 +80,6 @@ class SpeakerDiarizationServiceTest extends TestCase
 
     private function merge(array $transcription, array $segments, string $audio): array
     {
-        $reflection = new ReflectionClass(SpeakerDiarizationService::class);
-        $service = $reflection->newInstanceWithoutConstructor();
-
-        return $reflection->getMethod('merge')->invoke(
-            $service,
-            $transcription,
-            $segments,
-            $audio,
-            ['clip_start_ms' => 0],
-        );
+        return app(SpeakerTranscriptMerger::class)->merge($audio, $transcription, $segments, ['clip_start_ms' => 0]);
     }
 }

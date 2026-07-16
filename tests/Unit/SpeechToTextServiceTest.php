@@ -3,9 +3,9 @@
 namespace Tests\Unit;
 
 use App\Enums\TranscriptionEngine;
-use App\Services\HostedTranscriptionApiService;
-use App\Services\OfflineWhisperService;
-use App\Services\SpeechToTextService;
+use App\Services\HostedApi\HostedTranscriptionApiService;
+use App\Services\Speech\OfflineWhisperService;
+use App\Services\Speech\SpeechToTextService;
 use Mockery;
 use PHPUnit\Framework\TestCase;
 

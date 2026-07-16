@@ -5,7 +5,9 @@ namespace App\Http\Controllers;
 use App\Exceptions\TranscriptPolisherException;
 use App\Models\AudioChunk;
 use App\Models\CleanTranscriptChunk;
-use App\Services\TranscriptPolisherService;
+use App\Services\BackgroundJobs\BackgroundJobDispatcher;
+use App\Services\Transcripts\TranscriptFurnishService;
+use App\Services\Transcripts\TranscriptPolisherService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -16,7 +18,12 @@ class TranscriptFurnishController extends Controller
 
     private const POLISH_REQUEST_INTERVAL_SECONDS = 4;
 
-    public function store(Request $request, TranscriptPolisherService $polisher): JsonResponse
+    public function store(
+        Request $request,
+        TranscriptPolisherService $polisher,
+        TranscriptFurnishService $furnisher,
+        BackgroundJobDispatcher $backgroundJobs,
+    ): JsonResponse
     {
         @set_time_limit(0);
 
@@ -24,6 +31,8 @@ class TranscriptFurnishController extends Controller
             'user_id' => ['nullable', 'integer', 'min:1'],
             'category_name' => ['required', 'string', 'max:120'],
             'window_index' => ['nullable', 'integer', 'min:0'],
+            'audio_chunk_ids' => ['nullable', 'array', 'min:1', 'max:20'],
+            'audio_chunk_ids.*' => ['required', 'integer', 'min:1'],
             'instructions' => ['required', 'string', 'min:3', 'max:2000'],
         ]);
 
@@ -32,6 +41,25 @@ class TranscriptFurnishController extends Controller
         $instructions = trim((string) $validated['instructions']);
         $instructionHash = hash('sha256', $instructions);
         $requestCount = 0;
+
+        if (isset($validated['audio_chunk_ids']) && is_array($validated['audio_chunk_ids'])) {
+            $audioChunkIds = array_values(array_unique(array_map('intval', $validated['audio_chunk_ids'])));
+
+            if ($backgroundJobs->wantsBackgroundJob($request)) {
+                return $backgroundJobs->response('polish_transcript_chunks', [
+                    'user_id' => $userId,
+                    'category_name' => $categoryName,
+                    'audio_chunk_ids' => $audioChunkIds,
+                    'instructions' => $instructions,
+                ]);
+            }
+
+            try {
+                return response()->json($furnisher->polishAudioChunks($userId, $categoryName, $audioChunkIds, $instructions));
+            } catch (TranscriptPolisherException $exception) {
+                return $this->furnishFailure($exception, $categoryName);
+            }
+        }
 
         if (array_key_exists('window_index', $validated) && $validated['window_index'] !== null) {
             $windowIndex = (int) $validated['window_index'];
@@ -262,6 +290,7 @@ class TranscriptFurnishController extends Controller
         return array_map(
             fn ($chunk): array => [
                 'id' => (int) $chunk->id,
+                'clip_index' => (int) $chunk->clip_index,
                 'range_label' => $chunk->range_label,
                 'text' => (string) ($chunk->translated_text ?? ''),
                 'timestamps' => $this->decodeTimestamps($chunk->transcription_timestamps),

@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Services\AudioFileChunkerService;
+use App\Services\Audio\AudioFileChunkerService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Process\Process;

@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\TranscriptMemoryService;
+use App\Services\Transcripts\TranscriptMemoryService;
 use Illuminate\Http\RedirectResponse;
 
 class TranscriptMemoryController extends Controller

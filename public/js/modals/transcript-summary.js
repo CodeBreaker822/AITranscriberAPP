@@ -26,6 +26,7 @@
         const closeButton = dialog.querySelector('[data-summary-close]');
         const source = dialog.querySelector('[data-summary-source]');
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        const backgroundJobs = window.AITranscriberBackgroundJobs;
         let categoryName = '';
         let pollTimer = null;
         let requestRunning = false;
@@ -361,25 +362,31 @@
             render({ status: 'processing' });
 
             try {
-                const response = await fetch(storeUrl, {
+                const payload = await backgroundJobs.request({
+                    url: storeUrl,
                     method: 'POST',
                     headers: {
                         Accept: 'application/json',
                         'Content-Type': 'application/json',
                         'X-CSRF-TOKEN': csrfToken,
                     },
-                    body: JSON.stringify({
+                    data: JSON.stringify({
                         category_name: categoryName,
                         source_type: String(source.value || 'raw'),
                     }),
+                    contentType: 'application/json',
+                }, {
+                    timeoutMs: 600000,
+                    intervalMs: 1200,
+                    failureMessage: 'The transcript could not be summarized.',
+                    cancelledMessage: 'Transcript summarization was cancelled.',
                 });
-                const payload = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    throw new Error(String(payload.message || 'The transcript could not be summarized.'));
-                }
+                requestRunning = false;
                 render(payload.data || {});
             } catch (exception) {
-                render({ status: 'failed', error_message: String(exception?.message || exception) });
+                const message = String(exception?.responseJSON?.message || exception?.message || exception || 'The transcript could not be summarized.');
+                requestRunning = false;
+                render({ status: 'failed', error_message: message });
             } finally {
                 requestRunning = false;
                 runButton.disabled = false;

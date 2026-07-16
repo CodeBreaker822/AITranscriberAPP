@@ -4,37 +4,40 @@ namespace App\Services\AudioChunk;
 
 use App\Enums\AudioChunkStatus;
 use App\Models\AudioChunk;
-use App\Services\ServiceUserMessage;
-use App\Services\StoredAudioService;
+use App\Services\Support\ServiceUserMessage;
 use RuntimeException;
 
 class AudioChunkPersistenceService
 {
+    private const ROW_COLUMNS = [
+        'id',
+        'clip_index',
+        'clip_start_ms',
+        'clip_end_ms',
+        'range_label',
+        'duration_ms',
+        'category_name',
+        'status',
+        'original_name',
+        'translated_text',
+        'transcription_timestamps',
+        'created_at',
+    ];
+
     public function __construct(
-        private readonly StoredAudioService $storedAudio,
         private readonly AudioChunkPayloadService $payloads,
+        private readonly AudioChunkRowPresenter $rows,
+        private readonly AudioChunkAudioPayloadService $audioPayloads,
+        private readonly AudioChunkRecordStore $records,
     ) {}
 
     public function listRows(): array
     {
         $rows = AudioChunk::query()
-            ->select([
-                'id',
-                'clip_index',
-                'clip_start_ms',
-                'clip_end_ms',
-                'range_label',
-                'duration_ms',
-                'category_name',
-                'status',
-                'original_name',
-                'translated_text',
-                'transcription_timestamps',
-                'created_at',
-            ])
+            ->select(self::ROW_COLUMNS)
             ->orderByDesc('created_at')
             ->get()
-            ->map(fn (AudioChunk $row): array => $this->responseRow($row));
+            ->map(fn (AudioChunk $row): array => $this->rows->row($row));
 
         return [
             'data' => $rows,
@@ -59,22 +62,10 @@ class AudioChunkPersistenceService
         $positions = array_flip($ids);
 
         $rows = AudioChunk::query()
-            ->select([
-                'id',
-                'clip_index',
-                'clip_start_ms',
-                'clip_end_ms',
-                'range_label',
-                'duration_ms',
-                'category_name',
-                'status',
-                'original_name',
-                'translated_text',
-                'transcription_timestamps',
-            ])
+            ->select(self::ROW_COLUMNS)
             ->whereKey($ids)
             ->get()
-            ->map(fn (AudioChunk $row): array => $this->responseRow($row))
+            ->map(fn (AudioChunk $row): array => $this->rows->row($row))
             ->sortBy(fn (array $row): int => $positions[(int) $row['id']] ?? PHP_INT_MAX)
             ->values();
 
@@ -86,50 +77,17 @@ class AudioChunkPersistenceService
 
     public function audioPayload(int $audioChunk): ?array
     {
-        $row = AudioChunk::query()->find($audioChunk);
-
-        if (! $row) {
-            return null;
-        }
-
-        $audioPath = $this->storedAudio->absolutePath($row->audio_path ?? null);
-
-        if ($audioPath !== null) {
-            return [
-                'type' => 'file',
-                'path' => $audioPath,
-                'mime_type' => $row->mime_type ?: 'audio/flac',
-                'size' => filesize($audioPath) ?: 0,
-            ];
-        }
-
-        $audioBlob = is_string($row->audio_blob ?? null) ? $row->audio_blob : '';
-
-        if ($audioBlob === '') {
-            return null;
-        }
-
-        return [
-            'type' => 'blob',
-            'contents' => $audioBlob,
-            'mime_type' => $row->mime_type ?: 'audio/webm',
-            'size' => strlen($audioBlob),
-        ];
+        return $this->audioPayloads->payload($audioChunk);
     }
 
     public function destroy(int $audioChunk): array
     {
-        $row = AudioChunk::query()->find($audioChunk);
-
-        if (! $row) {
+        if (! $this->records->delete($audioChunk)) {
             return [
                 'status' => 404,
                 'data' => ['message' => 'not found'],
             ];
         }
-
-        $row->delete();
-        $this->storedAudio->delete($row->audio_path ?? null);
 
         return [
             'status' => 200,
@@ -151,39 +109,23 @@ class AudioChunkPersistenceService
         string $status = AudioChunkStatus::Transcribed->value,
         bool $includePreparedMetadata = true,
     ): array {
-        if (! is_file($storedAudio['path'])) {
-            throw new RuntimeException(ServiceUserMessage::audioReadFailed());
-        }
-
         $transcription = [
             'text' => (string) ($transcription['text'] ?? ''),
             'timestamps' => is_array($transcription['timestamps'] ?? null) ? $transcription['timestamps'] : [],
         ];
-        $audioChunk = $this->createAudioChunkRecord(
+
+        return $this->storeAudioChunk(
             $validated,
             $storedAudio,
+            $transcription,
             $userId,
             $categoryName,
             $transcription['text'],
-            $transcription['timestamps'],
+            $sourceType,
+            $storageSessionId,
             $status,
+            $includePreparedMetadata,
         );
-        $audioChunkId = (int) $audioChunk->id;
-        $this->attachStoredAudio($audioChunkId, $storedAudio['path'], $storageSessionId);
-
-        return [
-            ...$this->payloads->responseData(
-                $audioChunkId,
-                $validated,
-                $storedAudio,
-                $transcription,
-                $userId,
-                $categoryName,
-                $sourceType,
-                $includePreparedMetadata,
-            ),
-            'status' => $status,
-        ];
     }
 
     public function storePreparedAudioForDiarization(
@@ -194,40 +136,17 @@ class AudioChunkPersistenceService
         string $sourceType,
         string $storageSessionId,
     ): array {
-        if (! is_file($storedAudio['path'])) {
-            throw new RuntimeException(ServiceUserMessage::audioReadFailed());
-        }
-
-        $transcription = [
-            'text' => '',
-            'timestamps' => [],
-        ];
-        $status = AudioChunkStatus::DiarizationReady->value;
-        $audioChunk = $this->createAudioChunkRecord(
+        return $this->storeAudioChunk(
             $validated,
             $storedAudio,
+            ['text' => '', 'timestamps' => []],
             $userId,
             $categoryName,
             null,
-            $transcription['timestamps'],
-            $status,
+            $sourceType,
+            $storageSessionId,
+            AudioChunkStatus::DiarizationReady->value,
         );
-
-        $audioChunkId = (int) $audioChunk->id;
-        $this->attachStoredAudio($audioChunkId, $storedAudio['path'], $storageSessionId);
-
-        return [
-            ...$this->payloads->responseData(
-                $audioChunkId,
-                $validated,
-                $storedAudio,
-                $transcription,
-                $userId,
-                $categoryName,
-                $sourceType,
-            ),
-            'status' => $status,
-        ];
     }
 
     public function completePreparedAudioTranscription(
@@ -275,72 +194,51 @@ class AudioChunkPersistenceService
         ];
     }
 
-    private function attachStoredAudio(int $audioChunkId, string $wavPath, string $sessionId): void
-    {
-        try {
-            $metadata = $this->storedAudio->persistWav($wavPath, $sessionId, $audioChunkId);
-            AudioChunk::query()->whereKey($audioChunkId)->update([
-                ...$metadata,
-                'file_size_bytes' => $metadata['audio_size'],
-                'updated_at' => now(),
-            ]);
-        } catch (\Throwable $exception) {
-            AudioChunk::query()->whereKey($audioChunkId)->delete();
-
-            throw $exception;
-        }
-    }
-
-    private function responseRow(AudioChunk $row): array
-    {
-        return [
-            'id' => $row->id,
-            'clip_index' => (int) $row->clip_index,
-            'clip_start_ms' => (int) $row->clip_start_ms,
-            'clip_end_ms' => (int) $row->clip_end_ms,
-            'range_label' => $row->range_label,
-            'duration_ms' => (int) $row->duration_ms,
-            'category_name' => $row->category_name ?: 'General',
-            'source_type' => $this->payloads->sourceType($row->original_name),
-            'status' => $row->status,
-            'play_url' => route('audio-chunks.audio', ['audioChunk' => $row->id]),
-            'delete_url' => route('audio-chunks.destroy', ['audioChunk' => $row->id]),
-            'translated_text' => $row->translated_text ?? null,
-            'transcription_timestamps' => is_array($row->transcription_timestamps)
-                ? $row->transcription_timestamps
-                : [],
-        ];
-    }
-
-    /**
-     * @param array<string, mixed> $validated
-     * @param array<string, mixed> $storedAudio
-     * @param array<int, array<string, mixed>> $timestamps
-     */
-    private function createAudioChunkRecord(
+    private function storeAudioChunk(
         array $validated,
         array $storedAudio,
+        array $transcription,
         int $userId,
         string $categoryName,
         ?string $translatedText,
-        array $timestamps,
+        string $sourceType,
+        string $storageSessionId,
         string $status,
-    ): AudioChunk {
-        return AudioChunk::query()->create([
-            'user_id' => $userId,
-            'category_name' => $categoryName,
-            'clip_index' => (int) $validated['clip_index'],
-            'clip_start_ms' => (int) $validated['clip_start_ms'],
-            'clip_end_ms' => (int) $validated['clip_end_ms'],
-            'range_label' => (string) $validated['range_label'],
-            'duration_ms' => (int) $validated['duration_ms'],
-            'mime_type' => (string) $storedAudio['mime_type'],
-            'original_name' => (string) $storedAudio['name'],
-            'file_size_bytes' => (int) $storedAudio['size'],
-            'audio_blob' => '',
-            'translated_text' => $translatedText,
-            'transcription_timestamps' => $timestamps,
+        bool $includePreparedMetadata = true,
+    ): array {
+        if (! is_file($storedAudio['path'])) {
+            throw new RuntimeException(ServiceUserMessage::audioReadFailed());
+        }
+
+        $timestamps = is_array($transcription['timestamps'] ?? null) ? $transcription['timestamps'] : [];
+        $audioChunk = $this->records->create(
+            $validated,
+            $storedAudio,
+            $userId,
+            $categoryName,
+            $translatedText,
+            $timestamps,
+            $status,
+        );
+        $audioChunkId = (int) $audioChunk->id;
+        $this->records->attachStoredAudio($audioChunkId, $storedAudio['path'], $storageSessionId);
+
+        return [
+            ...$this->payloads->responseData(
+                $audioChunkId,
+                $validated,
+                $storedAudio,
+                [
+                    'text' => (string) ($transcription['text'] ?? ''),
+                    'timestamps' => $timestamps,
+                ],
+                $userId,
+                $categoryName,
+                $sourceType,
+                $includePreparedMetadata,
+            ),
             'status' => $status,
-        ]);
+        ];
     }
+
 }

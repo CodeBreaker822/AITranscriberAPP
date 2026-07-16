@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AppSetting;
-use App\Services\AppSettingsService;
+use App\Services\Config\AppSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;

@@ -3,8 +3,8 @@
 namespace App\Services\HostedApi;
 
 use App\Exceptions\SpeechToTextException;
-use App\Services\ServiceUserMessage;
-use App\Services\TrustedHttpClient;
+use App\Services\Support\ServiceUserMessage;
+use App\Services\Http\TrustedHttpClient;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 

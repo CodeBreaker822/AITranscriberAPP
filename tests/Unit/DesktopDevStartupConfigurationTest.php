@@ -20,21 +20,27 @@ class DesktopDevStartupConfigurationTest extends TestCase
         $this->assertStringContainsString('.\\php\\php.exe', $composer['scripts']['dev:local'][1]);
     }
 
-    public function test_vite_is_ready_before_laravel_allows_tauri_to_open(): void
+    public function test_laravel_dev_server_is_not_blocked_by_vite_readiness(): void
     {
         $root = dirname(__DIR__, 2);
         $vite = file_get_contents($root.'/vite.config.js');
         $launcher = file_get_contents($root.'/scripts/dev-local.mjs');
+        $tauri = json_decode(file_get_contents($root.'/src-tauri/tauri.conf.json'), true, 512, JSON_THROW_ON_ERROR);
 
         $this->assertStringContainsString("host: '127.0.0.1'", $vite);
         $this->assertStringContainsString("port: 5173", $vite);
         $this->assertStringContainsString("'**/.git/**'", $vite);
         $this->assertStringContainsString("'**/.git-broken/**'", $vite);
-        $this->assertStringContainsString('await waitForVite();', $launcher);
+        $this->assertStringNotContainsString('waitForVite', $launcher);
+        $this->assertStringNotContainsString('@vite/client', $launcher);
         $this->assertLessThan(
             strpos($launcher, "start('Laravel server'"),
-            strpos($launcher, 'await waitForVite();'),
+            strpos($launcher, "start('Vite server'"),
         );
+        $this->assertSame('.\\node\\node.exe scripts\\dev-local.mjs', $tauri['build']['beforeDevCommand']);
+        $this->assertSame('.\\node\\node.exe scripts\\prepare-desktop.mjs', $tauri['build']['beforeBuildCommand']);
+        $this->assertSame('http://127.0.0.1:8010/desktop-loading', $tauri['build']['devUrl']);
+        $this->assertSame('#071018', $tauri['app']['windows'][0]['backgroundColor']);
     }
 
     public function test_windows_build_treats_the_vulkan_loader_as_optional(): void
@@ -83,7 +89,13 @@ class DesktopDevStartupConfigurationTest extends TestCase
 
         $this->assertLessThan(strpos($main, '.arg("queue:work")'), strpos($main, 'clear_pending_queue('));
         $this->assertStringContainsString('"Pending queue jobs cleared before worker startup."', $main);
-        $this->assertLessThan(strpos($devLauncher, "start('Queue worker'"), strpos($devLauncher, "'queue:clear'"));
-        $this->assertStringContainsString("'--queue=default'", $devLauncher);
+        $this->assertStringContainsString('["default", "audio", "transcripts"]', $main);
+        $this->assertStringContainsString('["audio", "transcripts", "default"]', $main);
+        foreach (['default', 'audio', 'transcripts'] as $queue) {
+            $this->assertStringContainsString("'--queue={$queue}'", $devLauncher);
+        }
+        $this->assertLessThan(strpos($devLauncher, "start('Audio queue worker'"), strpos($devLauncher, "'--queue=audio'"));
+        $this->assertLessThan(strpos($devLauncher, "start('Transcript queue worker'"), strpos($devLauncher, "'--queue=transcripts'"));
+        $this->assertLessThan(strpos($devLauncher, "start('Default queue worker'"), strpos($devLauncher, "'--queue=default'"));
     }
 }

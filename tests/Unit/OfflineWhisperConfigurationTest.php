@@ -16,7 +16,7 @@ class OfflineWhisperConfigurationTest extends TestCase
 
     public function test_empty_offline_output_is_returned_for_the_controller_to_treat_as_no_speech(): void
     {
-        $source = file_get_contents(dirname(__DIR__, 2).'/app/Services/OfflineWhisperService.php');
+        $source = file_get_contents(dirname(__DIR__, 2).'/app/Services/Speech/OfflineWhisperPayloadNormalizer.php');
 
         $this->assertStringNotContainsString("if (\$text === '')", $source);
         $this->assertStringNotContainsString('returned no transcript', $source);
@@ -37,14 +37,15 @@ class OfflineWhisperConfigurationTest extends TestCase
         $engine = file_get_contents($root.'/src-tauri/src/offline_whisper.rs');
         $worker = file_get_contents($root.'/src-tauri/src/offline_whisper_worker.rs');
         $main = file_get_contents($root.'/src-tauri/src/main.rs');
-        $service = file_get_contents($root.'/app/Services/OfflineWhisperService.php');
+        $service = file_get_contents($root.'/app/Services/Speech/OfflineWhisperService.php');
+        $workerClient = file_get_contents($root.'/app/Services/Speech/OfflineWhisperWorkerClient.php');
 
         $this->assertStringContainsString('pub struct OfflineWhisperEngine', $engine);
         $this->assertStringContainsString('loaded.uses_configuration(&model_path, use_gpu)', $worker);
         $this->assertStringContainsString('let mut engine: Option<OfflineWhisperEngine> = None', $worker);
         $this->assertStringContainsString('IDLE_MODEL_TIMEOUT', $worker);
         $this->assertStringContainsString('offline_whisper_worker::start', $main);
-        $this->assertStringContainsString('offline-whisper-worker.json', $service);
+        $this->assertStringContainsString('offline-whisper-worker.json', $workerClient);
         $this->assertStringContainsString("'release' => (bool) (\$options['release_worker'] ?? false)", $service);
     }
 
@@ -54,15 +55,18 @@ class OfflineWhisperConfigurationTest extends TestCase
         $engine = file_get_contents($root.'/src-tauri/src/offline_whisper.rs');
         $worker = file_get_contents($root.'/src-tauri/src/offline_whisper_worker.rs');
         $main = file_get_contents($root.'/src-tauri/src/main.rs');
-        $service = file_get_contents($root.'/app/Services/OfflineWhisperService.php');
+        $service = file_get_contents($root.'/app/Services/Speech/OfflineWhisperService.php');
         $frontend = file_get_contents($root.'/resources/js/app.js');
+        $upload = file_get_contents($root.'/resources/js/upload/upload-controller.js');
+        $live = file_get_contents($root.'/resources/js/live/live-controller.js');
 
         $this->assertStringContainsString('set_progress_callback_safe', $engine);
         $this->assertStringContainsString('progress_id: Option<String>', $worker);
         $this->assertStringContainsString('offline-whisper-progress', $main);
         $this->assertStringContainsString("'progress_id'", $service);
         $this->assertStringContainsString("tauriEventListen('offline-whisper-progress'", $frontend);
-        $this->assertStringContainsString('Whisper ${Math.round(whisperPercent)}%', $frontend);
+        $this->assertStringContainsString('Whisper ${Math.round(whisperPercent)}%', $upload);
+        $this->assertStringContainsString('Whisper ${Math.round(whisperPercent)}%', $live);
     }
 
     public function test_offline_whisper_can_be_cancelled_while_inference_is_running(): void
@@ -73,6 +77,8 @@ class OfflineWhisperConfigurationTest extends TestCase
         $main = file_get_contents($root.'/src-tauri/src/main.rs');
         $build = file_get_contents($root.'/src-tauri/build.rs');
         $frontend = file_get_contents($root.'/resources/js/app.js');
+        $upload = file_get_contents($root.'/resources/js/upload/upload-controller.js');
+        $live = file_get_contents($root.'/resources/js/live/live-controller.js');
 
         $this->assertStringContainsString('set_abort_callback_safe', $engine);
         $this->assertStringContainsString('pub fn cancel(progress_id: &str)', $worker);
@@ -80,20 +86,20 @@ class OfflineWhisperConfigurationTest extends TestCase
         $this->assertStringContainsString('fn cancel_offline_whisper(progress_id: String)', $main);
         $this->assertStringContainsString('"cancel_offline_whisper"', $build);
         $this->assertStringContainsString("invoke('cancel_offline_whisper'", $frontend);
-        $this->assertStringContainsString('cancelWhisperProgress(uploadState.activeSectionProgressId)', $frontend);
-        $this->assertStringContainsString('cancelWhisperProgress(liveState.activeWhisperProgressId)', $frontend);
+        $this->assertStringContainsString('cancelWhisperProgress(uploadState.activeSectionProgressId)', $upload);
+        $this->assertStringContainsString('cancelWhisperProgress(liveState.activeWhisperProgressId)', $live);
     }
 
     public function test_offline_worker_retries_transport_failures_and_recovers_from_panics(): void
     {
         $root = dirname(__DIR__, 2);
-        $service = file_get_contents($root.'/app/Services/OfflineWhisperService.php');
+        $workerClient = file_get_contents($root.'/app/Services/Speech/OfflineWhisperWorkerClient.php');
         $worker = file_get_contents($root.'/src-tauri/src/offline_whisper_worker.rs');
 
-        $this->assertStringContainsString('MAX_WORKER_RETRIES = 3', $service);
-        $this->assertStringContainsString('MAX_WORKER_RETRIES + 1', $service);
-        $this->assertStringContainsString('response_prefix_hex', $service);
-        $this->assertStringContainsString("\$payload['retryable']", $service);
+        $this->assertStringContainsString('MAX_WORKER_RETRIES = 3', $workerClient);
+        $this->assertStringContainsString('MAX_WORKER_RETRIES + 1', $workerClient);
+        $this->assertStringContainsString('response_prefix_hex', $workerClient);
+        $this->assertStringContainsString("\$payload['retryable']", $workerClient);
         $this->assertStringContainsString('catch_unwind', $worker);
         $this->assertStringContainsString('worker recovered from an internal failure', $worker);
         $this->assertStringContainsString('"retryable": true', $worker);
@@ -105,7 +111,7 @@ class OfflineWhisperConfigurationTest extends TestCase
         $main = file_get_contents($root.'/src-tauri/src/main.rs');
         $whisper = file_get_contents($root.'/src-tauri/src/offline_whisper.rs');
         $worker = file_get_contents($root.'/src-tauri/src/offline_whisper_worker.rs');
-        $service = file_get_contents($root.'/app/Services/OfflineWhisperService.php');
+        $service = file_get_contents($root.'/app/Services/Speech/OfflineWhisperService.php');
 
         $this->assertStringContainsString('struct ResourceProfile', $main);
         $this->assertStringContainsString('AI_TRANSCRIBER_WHISPER_THREADS', $main);

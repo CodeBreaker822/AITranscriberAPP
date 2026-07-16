@@ -5,11 +5,11 @@ namespace App\Services\AudioChunk;
 use App\Enums\AudioChunkStatus;
 use App\Enums\TranscriptionEngine;
 use App\Exceptions\SpeechToTextException;
-use App\Services\AudioFileChunkerService;
-use App\Services\ServiceUserMessage;
-use App\Services\SpeakerDiarizationService;
-use App\Services\SpeechAudioFilterService;
-use App\Services\SpeechToTextService;
+use App\Services\Audio\AudioFileChunkerService;
+use App\Services\Support\ServiceUserMessage;
+use App\Services\Speakers\SpeakerDiarizationService;
+use App\Services\Audio\SpeechAudioFilterService;
+use App\Services\Speech\SpeechToTextService;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 

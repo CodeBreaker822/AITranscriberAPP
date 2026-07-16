@@ -2,12 +2,12 @@
 
 namespace Tests\Unit;
 
-use App\Services\AppSettingsService;
+use App\Services\Config\AppSettingsService;
 use App\Exceptions\SpeechToTextException;
 use App\Exceptions\TranscriptPolisherException;
-use App\Services\HostedTranscriptionApiService;
-use App\Services\TranscriptPolisherService;
-use App\Services\SpeechToTextService;
+use App\Services\HostedApi\HostedTranscriptionApiService;
+use App\Services\Transcripts\TranscriptPolisherService;
+use App\Services\Speech\SpeechToTextService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -214,13 +214,16 @@ class HostedTranscriptionApiServiceTest extends TestCase
 
     public function test_hosted_audio_uploads_use_streams_instead_of_loading_files_into_memory(): void
     {
-        $service = file_get_contents(dirname(__DIR__, 2).'/app/Services/HostedApi/HostedTranscriptionClient.php');
+        $root = dirname(__DIR__, 2);
+        $client = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionClient.php');
+        $resolver = file_get_contents($root.'/app/Services/HostedApi/HostedAudioFileResolver.php');
+        $limits = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionLimitGuard.php');
 
-        $this->assertStringContainsString("fopen(\$file['path'], 'rb')", $service);
-        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed([$file]);', $service);
-        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed($files);', $service);
-        $this->assertStringContainsString('finally {', $service);
-        $this->assertStringNotContainsString("file_get_contents(\$file['path'])", $service);
+        $this->assertStringContainsString("fopen(\$file['path'], 'rb')", $resolver);
+        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed([$file]);', $limits);
+        $this->assertStringContainsString('$this->assertUploadBytesAreAllowed($files);', $limits);
+        $this->assertStringContainsString('finally {', $client);
+        $this->assertStringNotContainsString("file_get_contents(\$file['path'])", $client.$resolver);
     }
 
     public function test_hosted_api_clients_share_the_local_ssl_certificate_transport(): void
@@ -232,7 +235,7 @@ class HostedTranscriptionApiServiceTest extends TestCase
         $transcriptionClient = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionClient.php');
         $jobClient = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionJobClient.php');
         $polishingClient = file_get_contents($root.'/app/Services/HostedApi/HostedPolishingClient.php');
-        $facade = file_get_contents($root.'/app/Services/HostedTranscriptionApiService.php');
+        $facade = file_get_contents($root.'/app/Services/HostedApi/HostedTranscriptionApiService.php');
 
         $this->assertStringContainsString('TrustedHttpClient', $apiClient);
         $this->assertStringContainsString('withOptions($this->http->options())', $apiClient);
@@ -246,7 +249,10 @@ class HostedTranscriptionApiServiceTest extends TestCase
         }
 
         $this->assertStringNotContainsString('Http::', $facade);
-        $this->assertSame(base_path('php/extras/ssl/cacert.pem'), config('services.http.ca_bundle'));
+        $this->assertSame(
+            str_replace('\\', '/', base_path('php/extras/ssl/cacert.pem')),
+            str_replace('\\', '/', (string) config('services.http.ca_bundle')),
+        );
         $this->assertFileExists(config('services.http.ca_bundle'));
     }
 
