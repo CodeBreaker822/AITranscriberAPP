@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdGE1akNRekJnaXl0QmgzS3laUWhOTzFHVEIrb2IzN3l3SXFEdjFDSENlYzQydENyMGRXajRPYUFJVXJ2cVJ2S1hJQ0VEQjB4MEp6RXJ0aEV5bk5qVThLTEVmYy93RGc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0Mjc0MDgwCWZpbGU6QUlUcmFuc2NyaWJlciBBUFBfMS4wLjhfeDY0LXNldHVwLmV4ZQpsUlBNelhkK3pZVnZvN1pqTE5hZVJFRkhzdWd5UjAzQ0h3d2RwVlFLTGoySnZEQy9RUmxuOXJsaUxsOE51MmpXTzRkSzBZZ1RFVnRkNjJNNzZZU2xEdz09Cg==",
-                                             "url":  "https://github.com/CodeBreaker822/AITranscriberAPP/raw/main/updates/app-v1.0.8/AITranscriber%20APP_1.0.8_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdGE1akNRekJnaTV0WklLcWpwSUMwVkFPNW1kUmtEMlpBeXJrY29ENTFTaTZJOXBwY296N3B6WlZPNkZtREVnZWE1SFdvOThGUzl4b0dIenY5OHkvWTNUTDE1WElQSndFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0Mjc3NTM2CWZpbGU6QUlUcmFuc2NyaWJlciBBUFBfMS4wLjEwX3g2NC1zZXR1cC5leGUKUmlPMlpUMTZ1RmFEWWh5ME1POTQvVlNtVVBIeVl4QTFIdVNzbWNMeXBZTlUrNVo4SjZESjNCb2dmcmRTT0k4YWIzV0Joem5XUHdZMFJld2dndHJZQ0E9PQo=",
+                                             "url":  "https://github.com/CodeBreaker822/AITranscriberAPP/raw/main/updates/app-v1.0.10/AITranscriber%20APP_1.0.10_x64-setup.exe"
                                          }
                   },
-    "pub_date":  "2026-07-17T07:42:45Z",
-    "version":  "1.0.8",
-    "notes":  "AITranscriber 1.0.8 update."
+    "pub_date":  "2026-07-17T08:40:13Z",
+    "version":  "1.0.10",
+    "notes":  "AITranscriber 1.0.10 update."
 }
