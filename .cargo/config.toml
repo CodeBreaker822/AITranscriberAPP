@@ -1,7 +1,0 @@
-[env]
-# LLVM supplies libclang.dll for whisper-rs-sys Windows binding generation.
-LIBCLANG_PATH = { value = "C:\\Program Files\\LLVM\\bin", force = false }
-
-# Standard Kitware CMake installation used to compile whisper.cpp. An explicit
-# process-level CMAKE value still takes precedence for custom toolchains.
-CMAKE = { value = "C:\\Program Files\\CMake\\bin\\cmake.exe", force = false }

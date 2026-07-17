@@ -1,0 +1,11 @@
+{
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdGE1akNRekJnaXlDVENrcTJVTWhJa1RTRWlMK2FrZ3B5eW5ZQWlwLzJNMFdqTnZLdWF1TzZWTkhtbUxxZzdDZkpkSnBVTFNucWZpVzhscFVVaFpTdlF2ZTFvVnJsNEFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MjYyNzcwCWZpbGU6QUlUcmFuc2NyaWJlciBBUFBfMS4wLjRfeDY0LXNldHVwLmV4ZQpVTTFOdkR1NWdVbDQ5a2MyNGtBcXY1T0RLMnRGcGpUMTVkUVZTellDZ29lcFdoNFpWeXZRU2JMUy92SVFwa3J5YVVULzM1dHZlZVlkNWhRbDFsQVVCdz09Cg==",
+                                             "url":  "https://github.com/CodeBreaker822/AITranscriberAPP/raw/main/updates/app-v1.0.4/AITranscriber%20APP_1.0.4_x64-setup.exe"
+                                         }
+                  },
+    "pub_date":  "2026-07-17T04:46:57Z",
+    "version":  "1.0.4",
+    "notes":  "AITranscriber 1.0.4 update."
+}
