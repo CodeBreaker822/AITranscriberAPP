@@ -6,7 +6,7 @@ ASTRA helps you turn live sessions and saved recordings into transcripts you can
 
 Use it for meetings, interviews, lectures, calls, reports, minutes, and any recording where you need more than one large block of text.
 
-Current version: `1.0.10`
+Current version: `1.1.0`
 
 ---
 
@@ -15,11 +15,11 @@ Current version: `1.0.10`
 Follow these steps on GitHub:
 
 1. Click the `updates` folder.
-2. Open the newest version folder, for example `app-v1.0.10`.
+2. Open the newest version folder, for example `app-v1.1.0`.
 3. Click this installer:
 
 ```text
-AITranscriber APP_1.0.10_x64-setup.exe
+AITranscriber APP_1.1.0_x64-setup.exe
 ```
 
 4. Click **Download raw file**.
