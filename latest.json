@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdGE1akNRekJnaS9wR0habGhmc3lGV0krT1FiQlNSbGdnMGw1citURFRqdXVGVHdONGxUS3FXZWFTQ21sdXh0MGxyMGtPM0UvVlo4Z2k2YlJxWjlMNkR3KzR3RUVjK3dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MzQ3MzQ1CWZpbGU6QUlUcmFuc2NyaWJlciBBUFBfMS4xLjBfeDY0LXNldHVwLmV4ZQpLYjRTTzNiTWpDanNybGlyZTBSZzhBci84YWp1MDVjd2ExdGRqblh3bHpVRzVFY0JpVmE1T1B1OEEvY3BVN3dBNUkrbStqUTZVN3hhanV5c1dJNmRBZz09Cg==",
-                                             "url":  "https://github.com/CodeBreaker822/AITranscriberAPP/raw/main/updates/app-v1.1.0/AITranscriber%20APP_1.1.0_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdGE1akNRekJnaXoxOEhzRVVUQlhrSFlnWUkwRFJDaWQ2RmNOUGMza0RnOEF1Qk5xaW1LeHpCU291MzZpOFBJVk9SU3Z5WG0vNlN5dEE5OTNGUlJtY1owdW1waTQvc2cwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0NDI2MzA4CWZpbGU6QVNUUkEgQUkgVHJhbnNjcmliZXJfMi4wLjNfeDY0LXNldHVwLmV4ZQpBRXNJS0t2MmpRWVBXWWtLbDc5ay8xYlFrV0N6dkpISy9aK2pqdmlYNFdsSEN0ZmRnSkJBSDVSODZjZ0JYV3l4S2c5Yi92WEVoRm5KSXlhdWxueThBZz09Cg==",
+                                             "url":  "https://github.com/CodeBreaker822/AITranscriberAPP/raw/main/updates/app-v2.0.3/ASTRA%20AI%20Transcriber_2.0.3_x64-setup.exe"
                                          }
                   },
-    "pub_date":  "2026-07-18T04:03:54Z",
-    "version":  "1.1.0",
-    "notes":  "AITranscriber 1.1.0 update."
+    "pub_date":  "2026-07-19T02:00:02Z",
+    "version":  "2.0.3",
+    "notes":  "ASTRA AI Transcriber 2.0.3 update."
 }
